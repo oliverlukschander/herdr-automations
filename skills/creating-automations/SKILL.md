@@ -53,8 +53,9 @@ Exactly one of `prompt` / `workflow` is required.
 - **Read the existing file first and append.** Never rewrite entries you didn't
   come to change.
 - Names must be unique. Spaces are allowed; the branch name is slugified.
-- Cron is validated on load, and one bad entry blocks the whole file — re-read
-  it after writing.
+- Every entry is validated on load. A bad one is skipped with a diagnostic and
+  the rest still run, so check `herdr-automations list` after writing: it names
+  what did not load, with the line to fix.
 - Times are local to the machine running the Herdr server.
 - **Always set `model`** on kinds that accept it (`claude`, `codex`, `cursor`,
   `gemini`, `opencode`). Omitting it leaves an unattended run on whatever the
