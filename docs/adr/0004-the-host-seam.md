@@ -35,5 +35,10 @@ in the runner, which is where the shell quoting and screen scraping now live.
 
 - Adding a herdr call means touching `ops`, its production adapter and the fake.
   Deliberate friction: the alternative was a 12-function interface.
+- The production adapter was twelve one-line forwards — a Middle Man in all but
+  name. `internal/herdr` now exposes its calls as methods on a `Client`, so the
+  adapter embeds it and the forwards are gone. What is left is the two things
+  that aren't Herdr's business: `LookPath` (is `hwf` installed) and `HasCode`
+  (which travels with the ops so a fake can answer for its own errors).
 - `herdr.Focus` and `herdr.ErrGone` stay outside the seam. They're the board
   jumping to a workspace, not a run happening.

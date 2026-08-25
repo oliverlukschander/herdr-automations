@@ -36,12 +36,34 @@ const (
 	StatusCancelled Status = "cancelled"
 )
 
+// Trigger is why a run started. CONTEXT.md names three.
+type Trigger string
+
+const (
+	// TriggerCron: it came due and ran on time.
+	TriggerCron Trigger = "cron"
+	// TriggerCatchup: it came due while the machine was unavailable and ran
+	// late, inside the catch-up window.
+	TriggerCatchup Trigger = "catchup"
+	// TriggerManual: somebody asked for it — `r` on the board, or `run`.
+	TriggerManual Trigger = "manual"
+)
+
+// NewID names a run in the log. Everything that appends here built the same
+// name-nanos shape by hand, three times, with three different infixes.
+func NewID(automation, kind string) string {
+	if kind != "" {
+		automation += "-" + kind
+	}
+	return fmt.Sprintf("%s-%d", automation, time.Now().UnixNano())
+}
+
 type Record struct {
 	RunID       string    `json:"run_id"`
 	Automation  string    `json:"automation"`
 	Status      Status    `json:"status"`
 	At          time.Time `json:"at"`
-	Trigger     string    `json:"trigger,omitempty"` // cron | manual
+	Trigger     Trigger   `json:"trigger,omitempty"`
 	WorkspaceID string    `json:"workspace_id,omitempty"`
 	PaneID      string    `json:"pane_id,omitempty"`
 	Error       string    `json:"error,omitempty"`

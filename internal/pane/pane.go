@@ -27,13 +27,75 @@ var (
 	okStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 )
 
+// row is one entry in automations.yaml as the board sees it: either an
+// automation that loaded, or a diagnostic saying why one didn't. A broken entry
+// gets a row so it shows up as broken rather than as a hole in the board.
 type row struct {
+	name string
+	// line is where the entry starts, for `e`. 0 means "open the top".
+	line int
 	auto config.Automation
 	last *history.Record
-	// diag is set when the entry did not load. The row exists so a broken
-	// automation shows up as broken rather than as a hole in the board, and so
-	// `e` can open the editor on the line that needs fixing.
 	diag *config.Diagnostic
+}
+
+// broke reports whether this row is an entry that never loaded.
+func (r row) broke() bool { return r.diag != nil }
+
+// status is the word in the status column.
+func (r row) status() string {
+	switch {
+	case r.broke():
+		return string(history.StatusInvalid)
+	case r.last == nil:
+		return "never"
+	default:
+		return string(r.last.Status)
+	}
+}
+
+// style colours the status. A cancelled run is dimmed, not reddened: somebody
+// closed it on purpose and there is nothing here to alarm about.
+func (r row) style() lipgloss.Style {
+	switch {
+	case r.broke():
+		return failStyle
+	case r.last == nil:
+		return dimStyle
+	}
+	switch r.last.Status {
+	case history.StatusFailed:
+		return failStyle
+	case history.StatusDone:
+		return okStyle
+	case history.StatusCancelled:
+		return dimStyle
+	default:
+		return lipgloss.NewStyle()
+	}
+}
+
+// detail is the trailing column: when it next runs, or why it never will.
+func (r row) detail() string {
+	switch {
+	case r.broke():
+		return r.diag.String()
+	case r.auto.Disabled:
+		return "(disabled)"
+	}
+	next, ok := schedule.NextRun(r.auto, time.Now())
+	if !ok {
+		return ""
+	}
+	return "next " + next.Format("Mon 15:04")
+}
+
+// schedule is the cron column. Meaningless when the cron is the broken bit.
+func (r row) schedule() string {
+	if r.broke() {
+		return "—"
+	}
+	return r.auto.Cron
 }
 
 type model struct {
@@ -99,7 +161,7 @@ func load() model {
 	}
 	for _, a := range cfg.Automations {
 		last, _ := history.LastRun(a.Name)
-		m.rows = append(m.rows, row{auto: a, last: last})
+		m.rows = append(m.rows, row{name: a.Name, line: a.Line, auto: a, last: last})
 	}
 	// The entries that did not load go on the board too. A typo used to blank
 	// the whole board with "config error"; now it costs one red row.
@@ -109,10 +171,7 @@ func load() model {
 		if name == "" {
 			name = "(unnamed)"
 		}
-		m.rows = append(m.rows, row{
-			auto: config.Automation{Name: name, Line: d.Line},
-			diag: &d,
-		})
+		m.rows = append(m.rows, row{name: name, line: d.Line, diag: &d})
 	}
 	return m
 }
@@ -219,14 +278,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a := m.rows[m.cursor].auto
 				m.setNotice(dimStyle, "running "+a.Name+"…")
 				runs := m.runs
-				return m, func() tea.Msg { return ranMsg{err: runs.Run(a, "manual")} }
+				return m, func() tea.Msg { return ranMsg{err: runs.Run(a, history.TriggerManual)} }
 			}
 		case "e":
 			// Open the YAML in $EDITOR at the selected automation's line,
 			// taking over the pane until the editor exits.
 			line := 0
 			if m.cursor < len(m.rows) {
-				line = m.rows[m.cursor].auto.Line
+				line = m.rows[m.cursor].line
 			}
 			cmd := editorCommand(config.Path(), line)
 			return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return editedMsg{err} })
@@ -234,7 +293,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Jump to the workspace the last run happened in, and close the
 			// board so the agent lands in front of you.
 			if m.cursor < len(m.rows) {
-				if m.rows[m.cursor].diag != nil {
+				if m.rows[m.cursor].broke() {
 					m.setNotice(dimStyle, "this entry never ran — press e to fix it")
 					return m, nil
 				}
@@ -243,7 +302,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.setNotice(dimStyle, "no run to jump to yet")
 					return m, nil
 				}
-				if err := herdr.Focus(last.WorkspaceID, last.PaneID); err != nil {
+				if err := (herdr.Client{}).Focus(last.WorkspaceID, last.PaneID); err != nil {
 					if errors.Is(err, herdr.ErrGone) {
 						m.setNotice(dimStyle,
 							"workspace "+last.WorkspaceID+" was closed — nothing to jump to")
@@ -286,31 +345,22 @@ func (m model) View() string {
 	for i, r := range m.rows {
 		// Pad the plain text first: styling before padding would make the
 		// escape codes count toward the column widths.
-		name := fmt.Sprintf("%-24s", truncate(r.auto.Name, 24))
-		cron := fmt.Sprintf("%-16s", truncate(r.auto.Cron, 16))
-		if r.diag != nil {
-			cron = fmt.Sprintf("%-16s", "—")
-		}
-		status := fmt.Sprintf("%-8s", statusText(r))
-		next := nextRun(r.auto)
-		switch {
-		case r.diag != nil:
-			next = r.diag.String()
-		case r.auto.Disabled:
-			next = "(disabled)"
-		}
+		name := fmt.Sprintf("%-24s", truncate(r.name, 24))
+		cron := fmt.Sprintf("%-16s", truncate(r.schedule(), 16))
+		status := fmt.Sprintf("%-8s", r.status())
+		detail := r.detail()
 
 		var line string
 		switch {
 		case i == m.cursor:
 			// One reverse-video span over the whole row: any nested color
 			// would end the highlight mid-line.
-			line = selectedStyle.Render(" " + name + " " + cron + " " + status + " " + next + " ")
+			line = selectedStyle.Render(" " + name + " " + cron + " " + status + " " + detail + " ")
 		case r.auto.Disabled:
-			line = dimStyle.Render(" " + name + " " + cron + " " + status + " " + next)
+			line = dimStyle.Render(" " + name + " " + cron + " " + status + " " + detail)
 		default:
 			line = " " + name + " " + cron + " " +
-				statusStyle(r).Render(status) + " " + dimStyle.Render(next)
+				r.style().Render(status) + " " + dimStyle.Render(detail)
 		}
 		s += line + "\n"
 	}
@@ -318,44 +368,6 @@ func (m model) View() string {
 		s += "\n" + m.noticeStyle.Render(m.noticeLine()) + "\n"
 	}
 	return s
-}
-
-func statusText(r row) string {
-	if r.diag != nil {
-		return string(history.StatusInvalid)
-	}
-	if r.last == nil {
-		return "never"
-	}
-	return string(r.last.Status)
-}
-
-func statusStyle(r row) lipgloss.Style {
-	if r.diag != nil {
-		return failStyle
-	}
-	if r.last == nil {
-		return dimStyle
-	}
-	switch r.last.Status {
-	case history.StatusFailed:
-		return failStyle
-	case history.StatusDone:
-		return okStyle
-	case history.StatusCancelled:
-		// Somebody closed it on purpose; there is nothing here to alarm about.
-		return dimStyle
-	default:
-		return lipgloss.NewStyle()
-	}
-}
-
-func nextRun(a config.Automation) string {
-	next, ok := schedule.NextRun(a, time.Now())
-	if !ok {
-		return ""
-	}
-	return "next " + next.Format("Mon 15:04")
 }
 
 func truncate(s string, n int) string {

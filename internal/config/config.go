@@ -254,7 +254,18 @@ func cleanYAMLError(err error) string {
 }
 
 // Save writes the config back, creating the directory on first use.
+//
+// It refuses while anything in the file failed to load. Save marshals what the
+// Config holds, and a Config holds only the entries that loaded — so writing
+// one back over a file with a broken entry in it deletes that entry. The wizard
+// does read-append-save, which is how `add` would silently eat an automation
+// with a typo in it.
 func Save(cfg *Config) error {
+	if len(cfg.Invalid) > 0 {
+		return fmt.Errorf("%s has %d entr%s that did not load; fix %s first",
+			filepath.Base(Path()), len(cfg.Invalid),
+			plural(len(cfg.Invalid), "y", "ies"), cfg.Invalid[0])
+	}
 	if err := os.MkdirAll(Dir(), 0o755); err != nil {
 		return err
 	}
@@ -292,6 +303,14 @@ func (c *Config) Diagnostic(name string) *Diagnostic {
 // happens to be valid writes a second one nobody asked for.
 func (c *Config) Declares(name string) bool {
 	return c.Find(name) != nil || c.Diagnostic(name) != nil
+}
+
+// plural picks a suffix without making the caller write a map literal.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 func expandHome(p string) string {

@@ -214,3 +214,30 @@ automations:
 		})
 	}
 }
+
+func TestSaveRefusesToDropTheEntriesThatDidNotLoad(t *testing.T) {
+	// The regression this exists for: Load returns only the valid entries, so
+	// marshalling a Config straight back deletes every broken one. The wizard
+	// does exactly that — read, append, save — which would make
+	// `herdr-automations add` silently eat an automation with a typo in it.
+	withConfig(t, `automations:
+  - {name: fine, cron: "@daily", repo: /x, prompt: p}
+  - {name: broken, cron: "nope", repo: /x, prompt: p}
+`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Save(cfg); err == nil {
+		t.Fatal("want Save refused: it cannot write what it was never given")
+	}
+	// And the file is untouched.
+	raw, err := os.ReadFile(Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "broken") {
+		t.Fatal("the broken entry was deleted from the file")
+	}
+}

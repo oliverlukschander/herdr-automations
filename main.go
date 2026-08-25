@@ -128,8 +128,11 @@ func printDiagnostics(cfg *config.Config) {
 	if len(cfg.Invalid) == 0 {
 		return
 	}
-	fmt.Printf("\n%d entr%s did not load and will not run:\n",
-		len(cfg.Invalid), map[bool]string{true: "y", false: "ies"}[len(cfg.Invalid) == 1])
+	subject := fmt.Sprintf("%d entries", len(cfg.Invalid))
+	if len(cfg.Invalid) == 1 {
+		subject = "1 entry"
+	}
+	fmt.Printf("\n%s did not load and will not run:\n", subject)
 	for _, d := range cfg.Invalid {
 		fmt.Printf("  %s\n", d)
 	}
@@ -241,7 +244,7 @@ func runCmd(args []string) error {
 		if _, err := fmt.Scanln(&n); err != nil || n < 1 || n > len(cfg.Automations) {
 			return fmt.Errorf("invalid selection")
 		}
-		return runner.Default().Run(cfg.Automations[n-1], "manual")
+		return runner.Default().Run(cfg.Automations[n-1], history.TriggerManual)
 	}
 	a := cfg.Find(args[0])
 	if a == nil {
@@ -250,7 +253,7 @@ func runCmd(args []string) error {
 		}
 		return fmt.Errorf("no automation named %q", args[0])
 	}
-	return runner.Default().Run(*a, "manual")
+	return runner.Default().Run(*a, history.TriggerManual)
 }
 
 func showHistory(name string) error {

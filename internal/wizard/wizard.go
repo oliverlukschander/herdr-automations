@@ -20,6 +20,16 @@ func Run() error {
 	if err != nil {
 		return err
 	}
+	// Say so now rather than after twenty questions: appending means rewriting
+	// the file, and the file is not currently something we can rewrite without
+	// losing an entry.
+	if len(cfg.Invalid) > 0 {
+		fmt.Printf("%s has entries that did not load:\n", config.Path())
+		for _, d := range cfg.Invalid {
+			fmt.Printf("  %s\n", d)
+		}
+		return fmt.Errorf("fix those first — adding an entry rewrites the file")
+	}
 
 	name := ask(in, "Name (kebab-case)", "")
 	if name == "" {

@@ -2,6 +2,30 @@
 
 What changed for someone using the plugin. Dates are release dates.
 
+## Unreleased
+
+- One bad entry in `automations.yaml` no longer stops the others. A typo in the
+  seventh automation used to fail the whole file, and the daemon's answer was a
+  line in a log nobody reads at 09:00 — every automation silently stopped
+  firing. Each entry now stands on its own: the broken one is reported with the
+  line to fix and skipped, the rest run. `herdr-automations list` names them
+  under the table, the board gives each one a red row you can press `e` on, and
+  `run <name>` says why it did not load instead of claiming no such automation
+  exists.
+- `herdr-automations add` refuses while an entry in the file is broken, rather
+  than rewriting the file without it. Fix the entry first — the message says
+  which line.
+- The plugin no longer loses track of its own config directory when herdr is
+  reinstalled under it. v0.4.2 fixed this for the board and `cleanup`; the same
+  stale-path bug survived in the code that locates `automations.yaml`, where the
+  symptom was worse — an empty config, so every automation appeared to vanish.
+- `cleanup` stops at the first worktree git refuses to remove instead of
+  skipping past it, and says which one. A refusal means something about the
+  worktree was not what the plan thought.
+- The board and the CLI now describe run worktrees in the same words. They had
+  drifted: "3 run worktrees, 1 still open" against "no run worktree is finished
+  with".
+
 ## v0.4.2 — 2026-08-21
 
 - Closing a run's workspace now ends the run. It is the natural way to call one

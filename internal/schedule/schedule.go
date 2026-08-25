@@ -13,7 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/robfig/cron/v3"
+
 	"github.com/DnzzL/herdr-automations/internal/config"
+	"github.com/DnzzL/herdr-automations/internal/history"
 )
 
 // State is what the scheduler has to remember between ticks: the occurrence
@@ -43,8 +46,8 @@ type Decision struct {
 	Automation config.Automation
 	// At is the occurrence this is about; for Register, the moment it was seen.
 	At time.Time
-	// Trigger is "cron" or "catchup", set on a Fire.
-	Trigger string
+	// Trigger is set on a Fire: on time, or late but inside the window.
+	Trigger history.Trigger
 	// Count is how many occurrences a Missed covers.
 	Count int
 	// Reason explains a Missed in the words the history log will carry.
@@ -122,9 +125,9 @@ func Plan(cfg *config.Config, state State, now time.Time) Result {
 			continue
 		}
 
-		trigger := "cron"
+		trigger := history.TriggerCron
 		if lateness > time.Minute {
-			trigger = "catchup"
+			trigger = history.TriggerCatchup
 		}
 		res.Decisions = append(res.Decisions, Decision{
 			Kind: Fire, Automation: a, At: occ, Trigger: trigger,
@@ -144,7 +147,7 @@ func Plan(cfg *config.Config, state State, now time.Time) Result {
 
 // due reports the most recent occurrence at or before now, how many earlier
 // occurrences were skipped along the way, and whether anything is due at all.
-func due(sched cronSchedule, last, now time.Time) (occ time.Time, skipped int, ok bool) {
+func due(sched cron.Schedule, last, now time.Time) (occ time.Time, skipped int, ok bool) {
 	next := sched.Next(last)
 	if next.After(now) {
 		return time.Time{}, 0, false
@@ -159,11 +162,6 @@ func due(sched cronSchedule, last, now time.Time) (occ time.Time, skipped int, o
 		occ = n
 	}
 	return occ, skipped, true
-}
-
-// cronSchedule is what this package needs of a parsed cron expression.
-type cronSchedule interface {
-	Next(time.Time) time.Time
 }
 
 // NextRun is when this automation comes due next, for the board and the list.

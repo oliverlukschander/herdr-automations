@@ -80,11 +80,11 @@ func evaluate(state *scheduleState, runs *runner.Runner) {
 			recordMissed(d.Automation.Name, d.Count, d.Reason)
 			log.Printf("%s: missed (%s)", d.Automation.Name, d.Reason)
 		case schedule.Fire:
-			if d.Trigger == "catchup" {
+			if d.Trigger == history.TriggerCatchup {
 				log.Printf("%s: running %s late", d.Automation.Name,
 					time.Since(d.At).Round(time.Minute))
 			}
-			go func(a config.Automation, trigger string) {
+			go func(a config.Automation, trigger history.Trigger) {
 				if err := runs.Run(a, trigger); err != nil {
 					log.Printf("run %s: %v", a.Name, err)
 				}
@@ -123,7 +123,7 @@ func reportInvalid(cfg *config.Config, state *scheduleState) bool {
 			name = "(unnamed)"
 		}
 		err := history.Append(history.Record{
-			RunID:      fmt.Sprintf("%s-invalid-%d", name, time.Now().UnixNano()),
+			RunID:      history.NewID(name, "invalid"),
 			Automation: name, Status: history.StatusInvalid,
 			At: time.Now(), Error: line,
 		})
@@ -147,8 +147,8 @@ func recordMissed(name string, count int, why string) {
 		detail = fmt.Sprintf("%d occurrences: %s", count, why)
 	}
 	err := history.Append(history.Record{
-		RunID:      fmt.Sprintf("%s-missed-%d", name, time.Now().UnixNano()),
-		Automation: name, Trigger: "cron", Status: history.StatusMissed,
+		RunID:      history.NewID(name, "missed"),
+		Automation: name, Trigger: history.TriggerCron, Status: history.StatusMissed,
 		At: time.Now(), Error: detail,
 	})
 	if err != nil {

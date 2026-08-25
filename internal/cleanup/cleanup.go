@@ -186,7 +186,7 @@ func verdict(r repos, repo string, w herdr.Worktree, base string) Verdict {
 type gitRepos struct{}
 
 func (gitRepos) Worktrees(repo string) ([]herdr.Worktree, error) {
-	return herdr.WorktreeList(repo)
+	return herdr.Client{}.WorktreeList(repo)
 }
 
 // DefaultBranch asks the remote what it considers default, falling back to the

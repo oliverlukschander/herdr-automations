@@ -38,21 +38,20 @@ func (r *Runner) Busy() bool {
 	return busy
 }
 
-// Run executes the automation synchronously. trigger is "cron", "catchup" or
-// "manual".
+// Run executes the automation synchronously.
 //
 // Overlapping runs of the same automation are skipped rather than queued: if
 // the 9:00 run is still working at 10:00, the 10:00 occurrence is dropped and
 // recorded as such.
-func (r *Runner) Run(a config.Automation, trigger string) error {
+func (r *Runner) Run(a config.Automation, trigger history.Trigger) error {
 	if _, busy := r.inFlight.LoadOrStore(a.Name, true); busy {
-		record(runID(a.Name), a.Name, trigger, history.StatusSkipped, host.Session{},
+		record(history.NewID(a.Name, ""), a.Name, trigger, history.StatusSkipped, host.Session{},
 			"previous run still in flight")
 		return fmt.Errorf("%s: previous run still in flight, skipped", a.Name)
 	}
 	defer r.inFlight.Delete(a.Name)
 
-	id := runID(a.Name)
+	id := history.NewID(a.Name, "")
 	record(id, a.Name, trigger, history.StatusScheduled, host.Session{}, "")
 
 	session, err := r.host.Provision(a)
@@ -81,11 +80,7 @@ func statusFor(err error) history.Status {
 	return history.StatusFailed
 }
 
-func runID(name string) string {
-	return fmt.Sprintf("%s-%d", name, time.Now().UnixNano())
-}
-
-func record(id, name, trigger string, st history.Status, s host.Session, errMsg string) {
+func record(id, name string, trigger history.Trigger, st history.Status, s host.Session, errMsg string) {
 	err := history.Append(history.Record{
 		RunID: id, Automation: name, Trigger: trigger, Status: st, At: time.Now(),
 		WorkspaceID: s.WorkspaceID, PaneID: s.PaneID, Error: errMsg,
