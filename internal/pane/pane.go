@@ -29,6 +29,10 @@ var (
 type row struct {
 	auto config.Automation
 	last *history.Record
+	// diag is set when the entry did not load. The row exists so a broken
+	// automation shows up as broken rather than as a hole in the board, and so
+	// `e` can open the editor on the line that needs fixing.
+	diag *config.Diagnostic
 }
 
 type model struct {
@@ -137,6 +141,19 @@ func load() model {
 		last, _ := history.LastRun(a.Name)
 		m.rows = append(m.rows, row{auto: a, last: last})
 	}
+	// The entries that did not load go on the board too. A typo used to blank
+	// the whole board with "config error"; now it costs one red row.
+	for i := range cfg.Invalid {
+		d := cfg.Invalid[i]
+		name := d.Name
+		if name == "" {
+			name = "(unnamed)"
+		}
+		m.rows = append(m.rows, row{
+			auto: config.Automation{Name: name, Line: d.Line},
+			diag: &d,
+		})
+	}
 	return m
 }
 
@@ -234,6 +251,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "r":
 			if m.cursor < len(m.rows) {
+				if d := m.rows[m.cursor].diag; d != nil {
+					m.setNotice(failStyle, d.String())
+					return m, nil
+				}
 				a := m.rows[m.cursor].auto
 				m.setNotice(dimStyle, "running "+a.Name+"…")
 				runs := m.runs
@@ -244,7 +265,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// taking over the pane until the editor exits.
 			line := 0
 			if m.cursor < len(m.rows) {
-				line = config.LineOf(m.rows[m.cursor].auto.Name)
+				line = m.rows[m.cursor].auto.Line
 			}
 			cmd := editorCommand(config.Path(), line)
 			return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return editedMsg{err} })
@@ -252,6 +273,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Jump to the workspace the last run happened in, and close the
 			// board so the agent lands in front of you.
 			if m.cursor < len(m.rows) {
+				if m.rows[m.cursor].diag != nil {
+					m.setNotice(dimStyle, "this entry never ran — press e to fix it")
+					return m, nil
+				}
 				last := m.rows[m.cursor].last
 				if last == nil || last.WorkspaceID == "" {
 					m.setNotice(dimStyle, "no run to jump to yet")
@@ -302,9 +327,15 @@ func (m model) View() string {
 		// escape codes count toward the column widths.
 		name := fmt.Sprintf("%-24s", truncate(r.auto.Name, 24))
 		cron := fmt.Sprintf("%-16s", truncate(r.auto.Cron, 16))
+		if r.diag != nil {
+			cron = fmt.Sprintf("%-16s", "—")
+		}
 		status := fmt.Sprintf("%-8s", statusText(r))
 		next := nextRun(r.auto)
-		if r.auto.Disabled {
+		switch {
+		case r.diag != nil:
+			next = r.diag.String()
+		case r.auto.Disabled:
 			next = "(disabled)"
 		}
 
@@ -329,6 +360,9 @@ func (m model) View() string {
 }
 
 func statusText(r row) string {
+	if r.diag != nil {
+		return string(history.StatusInvalid)
+	}
 	if r.last == nil {
 		return "never"
 	}
@@ -336,6 +370,9 @@ func statusText(r row) string {
 }
 
 func statusStyle(r row) lipgloss.Style {
+	if r.diag != nil {
+		return failStyle
+	}
 	if r.last == nil {
 		return dimStyle
 	}

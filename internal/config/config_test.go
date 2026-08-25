@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -50,7 +51,7 @@ automations:
 	}
 }
 
-func TestLineOfFindsTheEntry(t *testing.T) {
+func TestLoadCarriesTheLineEachEntryStartsOn(t *testing.T) {
 	withConfig(t, `automations:
   - name: first
     cron: "@daily"
@@ -61,46 +62,91 @@ func TestLineOfFindsTheEntry(t *testing.T) {
     repo: /x
     prompt: p
 `)
-	if got := LineOf("second"); got != 6 {
-		t.Fatalf("LineOf(second) = %d, want 6", got)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := LineOf("first"); got != 2 {
-		t.Fatalf("LineOf(first) = %d, want 2", got)
+	if got := cfg.Automations[0].Line; got != 2 {
+		t.Errorf("first starts on line %d, want 2", got)
 	}
-	if got := LineOf("missing"); got != 0 {
-		t.Fatalf("LineOf(missing) = %d, want 0", got)
+	if got := cfg.Automations[1].Line; got != 6 {
+		t.Errorf("second starts on line %d, want 6", got)
 	}
 }
 
-func TestLoadRejectsBadEntries(t *testing.T) {
-	cases := map[string]string{
-		"bad cron": `
-automations:
-  - {name: a, cron: "not a cron", repo: /x, prompt: p}`,
-		"prompt and workflow": `
-automations:
-  - {name: a, cron: "@daily", repo: /x, prompt: p, workflow: w}`,
-		"neither prompt nor workflow": `
-automations:
-  - {name: a, cron: "@daily", repo: /x}`,
-		"duplicate names": `
-automations:
-  - {name: a, cron: "@daily", repo: /x, prompt: p}
-  - {name: a, cron: "@daily", repo: /x, prompt: p}`,
-		"bad workspace": `
-automations:
-  - {name: a, cron: "@daily", repo: /x, prompt: p, workspace: sandbox}`,
-		"model on a kind that takes none": `
-automations:
-  - {name: a, cron: "@daily", repo: /x, prompt: p, agent: droid, model: opus}`,
+func TestLoadKeepsTheGoodEntriesWhenOneIsBad(t *testing.T) {
+	// The failure this exists for: one error for the whole file meant a typo in
+	// the seventh automation stopped the other six, silently.
+	withConfig(t, `automations:
+  - {name: fine, cron: "@daily", repo: /x, prompt: p}
+  - {name: broken, cron: "0 99 * * *", repo: /x, prompt: p}
+  - {name: also-fine, cron: "@hourly", repo: /x, prompt: p}
+`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("a single bad entry must not fail the load: %v", err)
 	}
-	for label, yaml := range cases {
-		t.Run(label, func(t *testing.T) {
-			withConfig(t, yaml)
-			if _, err := Load(); err == nil {
-				t.Fatalf("expected error for %s", label)
-			}
-		})
+	if len(cfg.Automations) != 2 {
+		t.Fatalf("loaded %d entries, want the two good ones", len(cfg.Automations))
+	}
+	if len(cfg.Invalid) != 1 {
+		t.Fatalf("diagnostics = %+v, want one", cfg.Invalid)
+	}
+	d := cfg.Invalid[0]
+	if d.Name != "broken" {
+		t.Errorf("diagnostic names %q", d.Name)
+	}
+	if d.Line != 3 {
+		t.Errorf("diagnostic points at line %d, want 3", d.Line)
+	}
+	if got := d.String(); !strings.Contains(got, "automations.yaml:3") {
+		t.Errorf("String() = %q, want a file:line an editor can open", got)
+	}
+}
+
+func TestLoadStillFailsOnAFileItCannotParse(t *testing.T) {
+	// Nothing to run and nothing to point at: that is a real error.
+	withConfig(t, "automations: [oh: dear\n  ]]] not yaml")
+	if _, err := Load(); err == nil {
+		t.Fatal("want an error for a file that is not YAML")
+	}
+}
+
+func TestLoadDiagnosesAnEntryWhoseTypesAreWrong(t *testing.T) {
+	withConfig(t, `automations:
+  - {name: fine, cron: "@daily", repo: /x, prompt: p}
+  - {name: odd, cron: "@daily", repo: /x, prompt: p, timeout_minutes: soon}
+`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("a malformed entry must not fail the load: %v", err)
+	}
+	if len(cfg.Automations) != 1 || len(cfg.Invalid) != 1 {
+		t.Fatalf("loaded %d, invalid %d", len(cfg.Automations), len(cfg.Invalid))
+	}
+	// Even undecodable, the name is worth recovering: it is how the board and
+	// `run` refer to the entry.
+	if cfg.Invalid[0].Name != "odd" {
+		t.Errorf("diagnostic names %q, want odd", cfg.Invalid[0].Name)
+	}
+}
+
+func TestDiagnosticAndDeclaresSeeTheEntriesThatFailed(t *testing.T) {
+	withConfig(t, `automations:
+  - {name: broken, cron: "nope", repo: /x, prompt: p}
+`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Find("broken") != nil {
+		t.Error("a broken entry must not be findable as runnable")
+	}
+	if cfg.Diagnostic("broken") == nil {
+		t.Error(`Diagnostic("broken") = nil: "no automation named broken" is the wrong thing to say`)
+	}
+	if !cfg.Declares("broken") {
+		t.Error("Declares() must see it, or the wizard writes a second one")
 	}
 }
 

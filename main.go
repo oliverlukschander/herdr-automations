@@ -86,8 +86,12 @@ func list() error {
 	if err != nil {
 		return err
 	}
-	if len(cfg.Automations) == 0 {
+	if len(cfg.Automations) == 0 && len(cfg.Invalid) == 0 {
 		fmt.Printf("No automations. Create one with `herdr-automations add` or edit %s\n", config.Path())
+		return nil
+	}
+	if len(cfg.Automations) == 0 {
+		printDiagnostics(cfg)
 		return nil
 	}
 	fmt.Printf("%-24s %-16s %-9s %-8s %-13s %s\n",
@@ -110,9 +114,24 @@ func list() error {
 		fmt.Printf("%-24s %-16s %-9s %-8s %-13s %s\n",
 			name, a.Cron, a.Workspace, a.Agent, model, last)
 	}
+	printDiagnostics(cfg)
 	printCollisions(cfg)
 	printWorktreeCount(cfg)
 	return nil
+}
+
+// printDiagnostics names the entries that did not load and the line to open.
+// They are not scheduled, so nothing above mentions them — and an automation
+// missing from a list is exactly the thing you do not notice.
+func printDiagnostics(cfg *config.Config) {
+	if len(cfg.Invalid) == 0 {
+		return
+	}
+	fmt.Printf("\n%d entr%s did not load and will not run:\n",
+		len(cfg.Invalid), map[bool]string{true: "y", false: "ies"}[len(cfg.Invalid) == 1])
+	for _, d := range cfg.Invalid {
+		fmt.Printf("  %s\n", d)
+	}
 }
 
 // printWorktreeCount says how many run worktrees are lying around and how many
@@ -240,6 +259,9 @@ func runCmd(args []string) error {
 	}
 	a := cfg.Find(args[0])
 	if a == nil {
+		if d := cfg.Diagnostic(args[0]); d != nil {
+			return fmt.Errorf("%s did not load: %s", args[0], d)
+		}
 		return fmt.Errorf("no automation named %q", args[0])
 	}
 	return runner.Default().Run(*a, "manual")

@@ -25,6 +25,11 @@ const (
 	// typically the machine was asleep past the catch-up window. Recording it
 	// is the point: a silently absent run is worse than a visible failure.
 	StatusMissed Status = "missed"
+	// StatusInvalid records an automation the scheduler could not even read —
+	// a broken entry in automations.yaml. It is not a run that failed, it is a
+	// run that was never possible, and it belongs in the log for the same
+	// reason StatusMissed does: the board is where you look.
+	StatusInvalid Status = "invalid"
 	// StatusCancelled records a run whose workspace was closed under it.
 	// Closing a run's workspace is how you call one off, so it is not a
 	// failure: nothing broke, somebody decided.

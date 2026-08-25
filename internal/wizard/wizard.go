@@ -24,7 +24,10 @@ func Run() error {
 	if name == "" {
 		return fmt.Errorf("a name is required")
 	}
-	if cfg.Find(name) != nil {
+	if cfg.Declares(name) {
+		// Declares, not Find: an existing entry that is currently broken is
+		// still an existing entry, and writing a second one by the same name
+		// makes both invalid.
 		return fmt.Errorf("automation %q already exists", name)
 	}
 
@@ -91,8 +94,12 @@ func Run() error {
 		return err
 	}
 	// Re-load to run full validation on what we just wrote.
-	if _, err := config.Load(); err != nil {
-		return fmt.Errorf("saved, but validation failed — fix %s: %w", config.Path(), err)
+	written, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("saved, but %s no longer parses: %w", config.Path(), err)
+	}
+	if d := written.Diagnostic(name); d != nil {
+		return fmt.Errorf("saved, but it will not run — fix %s", d)
 	}
 	fmt.Printf("\nSaved %q to %s\nThe daemon picks it up within 30s. Test it now with: herdr-automations run %s\n",
 		name, config.Path(), name)

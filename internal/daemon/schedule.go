@@ -38,6 +38,9 @@ func due(sched cron.Schedule, last, now time.Time) (occ time.Time, skipped int, 
 // for, so restarts and sleeps don't replay or lose runs.
 type scheduleState struct {
 	LastOccurrence map[string]time.Time `json:"last_occurrence"`
+	// Invalid is the set of diagnostics already reported, so an unfixed typo
+	// is logged once rather than every tick.
+	Invalid map[string]bool `json:"invalid,omitempty"`
 }
 
 func statePath() string {
@@ -45,13 +48,16 @@ func statePath() string {
 }
 
 func loadState() *scheduleState {
-	s := &scheduleState{LastOccurrence: map[string]time.Time{}}
+	s := &scheduleState{LastOccurrence: map[string]time.Time{}, Invalid: map[string]bool{}}
 	raw, err := os.ReadFile(statePath())
 	if err != nil {
 		return s
 	}
 	if json.Unmarshal(raw, s) != nil || s.LastOccurrence == nil {
 		s.LastOccurrence = map[string]time.Time{}
+	}
+	if s.Invalid == nil {
+		s.Invalid = map[string]bool{}
 	}
 	return s
 }

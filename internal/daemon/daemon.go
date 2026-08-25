@@ -65,9 +65,10 @@ func evaluate(state *scheduleState, runs *runner.Runner) {
 		return
 	}
 
+	dirty := reportInvalid(cfg, state)
+
 	now := time.Now()
 	live := map[string]bool{}
-	dirty := false
 
 	for _, a := range cfg.Automations {
 		live[a.Name] = true
@@ -139,6 +140,48 @@ func evaluate(state *scheduleState, runs *runner.Runner) {
 			log.Printf("saving schedule state: %v", err)
 		}
 	}
+}
+
+// reportInvalid records each broken entry once. evaluate runs every 30s, so
+// re-recording an unfixed typo would bury the log and the board under the same
+// line all day; going quiet about it entirely is how a "missing" automation
+// stays a mystery.
+func reportInvalid(cfg *config.Config, state *scheduleState) bool {
+	if state.Invalid == nil {
+		state.Invalid = map[string]bool{}
+	}
+	seen := map[string]bool{}
+	changed := false
+	for _, d := range cfg.Invalid {
+		line := d.String()
+		seen[line] = true
+		if state.Invalid[line] {
+			continue
+		}
+		state.Invalid[line] = true
+		changed = true
+		log.Printf("not scheduled — %s", line)
+		name := d.Name
+		if name == "" {
+			name = "(unnamed)"
+		}
+		err := history.Append(history.Record{
+			RunID:      fmt.Sprintf("%s-invalid-%d", name, time.Now().UnixNano()),
+			Automation: name, Status: history.StatusInvalid,
+			At: time.Now(), Error: line,
+		})
+		if err != nil {
+			log.Printf("history append failed: %v", err)
+		}
+	}
+	// Forget the ones that were fixed, so breaking them again is reported again.
+	for line := range state.Invalid {
+		if !seen[line] {
+			delete(state.Invalid, line)
+			changed = true
+		}
+	}
+	return changed
 }
 
 func recordMissed(name string, count int, why string) {

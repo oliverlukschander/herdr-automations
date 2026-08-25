@@ -1,6 +1,13 @@
 // Package config loads and validates automations.yaml, the single source of
 // truth for the plugin. Everything else (wizard, pane, daemon) reads or
 // rewrites this file.
+//
+// Loading is deliberately partial: an entry that does not validate becomes a
+// Diagnostic and the rest of the file still runs. Returning one error for the
+// whole file meant a typo in the seventh automation stopped the other six, and
+// the daemon's only response was a log line nobody reads at 09:00. For a tool
+// whose promise is "it ran while you slept", a silent absence is the worst
+// failure mode there is.
 package config
 
 import (
@@ -62,10 +69,39 @@ type Automation struct {
 	CatchUpMinutes int `yaml:"catch_up_minutes,omitempty"`
 	// Disabled keeps the entry in the file but out of the scheduler.
 	Disabled bool `yaml:"disabled,omitempty"`
+
+	// Line is where this entry starts in automations.yaml, 1-based, so an
+	// editor can be opened right at it. Set by Load, never written back.
+	Line int `yaml:"-"`
 }
 
 type Config struct {
+	// Automations are the entries that loaded. Only these run.
 	Automations []Automation `yaml:"automations"`
+	// Invalid are the entries that did not, one Diagnostic each. Kept out of
+	// Automations so nothing has to check before scheduling, and reported so
+	// the failure is visible where you look rather than only in a log.
+	Invalid []Diagnostic `yaml:"-"`
+}
+
+// Diagnostic is one entry that did not load, and where to go and fix it.
+type Diagnostic struct {
+	// Name of the automation, or empty when the entry is malformed enough that
+	// even its name could not be read.
+	Name string
+	// Line the entry starts on, 1-based. 0 when it could not be located.
+	Line    int
+	Message string
+}
+
+// String renders a diagnostic the way an editor and a human both want it:
+// file, line, then what is wrong.
+func (d Diagnostic) String() string {
+	where := filepath.Base(Path())
+	if d.Line > 0 {
+		where = fmt.Sprintf("%s:%d", where, d.Line)
+	}
+	return where + ": " + d.Message
 }
 
 func (a *Automation) applyDefaults() {
@@ -139,8 +175,11 @@ func StateDir() string { return hostpath.StateDir() }
 
 func Path() string { return filepath.Join(Dir(), "automations.yaml") }
 
-// Load reads, defaults and validates the config. A missing file is an empty
-// config, not an error: the daemon idles until the first automation exists.
+// Load reads the config. A missing file is an empty config, not an error: the
+// daemon idles until the first automation exists. An unreadable or unparseable
+// file is an error — there is nothing to run and nothing to point at. Anything
+// short of that is a Diagnostic on Config.Invalid, and the entries that did
+// load still run.
 func Load() (*Config, error) {
 	raw, err := os.ReadFile(Path())
 	if os.IsNotExist(err) {
@@ -149,25 +188,70 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	var cfg Config
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+	// Decoding through yaml.Node rather than straight into Config is what buys
+	// the line numbers: a diagnostic that cannot say where to look is only
+	// marginally better than silence.
+	var doc struct {
+		Automations []yaml.Node `yaml:"automations"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", Path(), err)
 	}
+
+	cfg := &Config{}
 	seen := map[string]bool{}
-	for i := range cfg.Automations {
-		a := &cfg.Automations[i]
+	for _, node := range doc.Automations {
+		var a Automation
+		if err := node.Decode(&a); err != nil {
+			cfg.Invalid = append(cfg.Invalid, Diagnostic{
+				Name: nameOf(node), Line: node.Line, Message: cleanYAMLError(err),
+			})
+			continue
+		}
+		a.Line = node.Line
 		a.applyDefaults()
 		a.Repo = expandHome(a.Repo)
 		a.MCPConfig = expandHome(a.MCPConfig)
+
 		if err := a.validate(); err != nil {
-			return nil, err
+			cfg.Invalid = append(cfg.Invalid, Diagnostic{
+				Name: a.Name, Line: a.Line, Message: err.Error(),
+			})
+			continue
 		}
 		if seen[a.Name] {
-			return nil, fmt.Errorf("duplicate automation name %q", a.Name)
+			cfg.Invalid = append(cfg.Invalid, Diagnostic{
+				Name: a.Name, Line: a.Line,
+				Message: fmt.Sprintf("%s: an automation by that name is already declared above", a.Name),
+			})
+			continue
 		}
 		seen[a.Name] = true
+		cfg.Automations = append(cfg.Automations, a)
 	}
-	return &cfg, nil
+	return cfg, nil
+}
+
+// nameOf recovers just the name from an entry too malformed to decode whole,
+// so the diagnostic can still say which automation it is about.
+func nameOf(node yaml.Node) string {
+	var partial struct {
+		Name string `yaml:"name"`
+	}
+	if node.Decode(&partial) != nil {
+		return ""
+	}
+	return partial.Name
+}
+
+// cleanYAMLError trims the library's line prefix: the diagnostic carries the
+// entry's own line, which is the one worth opening.
+func cleanYAMLError(err error) string {
+	msg := err.Error()
+	if _, rest, found := strings.Cut(msg, ": "); found && strings.HasPrefix(msg, "yaml: line ") {
+		return rest
+	}
+	return strings.TrimPrefix(msg, "yaml: ")
 }
 
 // Save writes the config back, creating the directory on first use.
@@ -180,28 +264,6 @@ func Save(cfg *Config) error {
 		return err
 	}
 	return os.WriteFile(Path(), out, 0o644)
-}
-
-// LineOf returns the 1-based line where an automation is declared, so an
-// editor can open the file right at it. 0 means "not found — open the top".
-func LineOf(name string) int {
-	raw, err := os.ReadFile(Path())
-	if err != nil {
-		return 0
-	}
-	for i, line := range strings.Split(string(raw), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "- ") && !strings.HasPrefix(trimmed, "name:") {
-			continue
-		}
-		// Matches both "- name: x" and a "name: x" line under a "-" bullet.
-		if _, value, found := strings.Cut(trimmed, "name:"); found {
-			if strings.TrimSpace(strings.Trim(strings.TrimSpace(value), `"'`)) == name {
-				return i + 1
-			}
-		}
-	}
-	return 0
 }
 
 // Collision is a moment when more than one automation comes due. Herdr is a
@@ -304,6 +366,25 @@ func (c *Config) Find(name string) *Automation {
 		}
 	}
 	return nil
+}
+
+// Diagnostic returns the reason an automation by that name did not load, or
+// nil. "No automation named x" is the wrong thing to say about one that is
+// right there in the file with a broken cron.
+func (c *Config) Diagnostic(name string) *Diagnostic {
+	for i := range c.Invalid {
+		if c.Invalid[i].Name == name {
+			return &c.Invalid[i]
+		}
+	}
+	return nil
+}
+
+// Declares reports whether the file mentions this name at all, valid or not.
+// The wizard needs it: refusing a duplicate only when the existing entry
+// happens to be valid writes a second one nobody asked for.
+func (c *Config) Declares(name string) bool {
+	return c.Find(name) != nil || c.Diagnostic(name) != nil
 }
 
 func expandHome(p string) string {
