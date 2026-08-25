@@ -46,19 +46,16 @@ type model struct {
 	err         error
 	notice      string
 	noticeStyle lipgloss.Style
-	// pending holds worktrees waiting on a y/n. Non-empty means the board is
+	// pending holds the plan waiting on a y/n. Non-nil means the board is
 	// asking, and every other key is suspended until it is answered.
-	pending []cleanup.Candidate
+	pending *cleanup.Plan
 }
 
 type refreshMsg struct{}
 type ranMsg struct{ err error }
 type editedMsg struct{ err error }
 type scannedMsg struct {
-	removable []cleanup.Candidate
-	// kept carries the worktrees that stay, so a scan that removes nothing can
-	// say why instead of reading like there was nothing there at all.
-	kept []cleanup.Candidate
+	plan cleanup.Plan
 	err  error
 }
 type cleanedMsg struct {
@@ -67,61 +64,23 @@ type cleanedMsg struct {
 }
 
 // scanCleanup finds the run worktrees whose work already landed. Everything
-// else -- open workspaces, unmerged commits -- is left alone and unmentioned:
-// the board offers a tidy-up, not a verdict on your branches.
+// else -- open workspaces, unmerged commits -- is left alone: the board offers
+// a tidy-up, not a verdict on your branches.
 func scanCleanup() tea.Msg {
 	cfg, err := config.Load()
 	if err != nil {
 		return scannedMsg{err: err}
 	}
-	candidates, err := cleanup.Scan(cfg)
+	plan, err := cleanup.Scan(cfg)
 	if err != nil {
 		return scannedMsg{err: err}
 	}
-	var removable, kept []cleanup.Candidate
-	for _, c := range candidates {
-		if c.Removable() {
-			removable = append(removable, c)
-		} else {
-			kept = append(kept, c)
-		}
-	}
-	return scannedMsg{removable: removable, kept: kept}
+	return scannedMsg{plan: plan}
 }
 
-// keptNotice explains a scan that removes nothing. "Nothing to remove" alone
-// reads as "no run worktrees exist", which sends you looking for worktrees that
-// are in fact right there, held back for a reason worth naming.
-func keptNotice(kept []cleanup.Candidate) string {
-	if len(kept) == 0 {
-		return "no run worktrees — nothing to remove"
-	}
-	counts := map[cleanup.Verdict]int{}
-	var order []cleanup.Verdict
-	for _, c := range kept {
-		if counts[c.Verdict] == 0 {
-			order = append(order, c.Verdict)
-		}
-		counts[c.Verdict]++
-	}
-	reasons := make([]string, 0, len(order))
-	for _, v := range order {
-		reasons = append(reasons, fmt.Sprintf("%d %s", counts[v], v))
-	}
-	return fmt.Sprintf("nothing to remove: %s", strings.Join(reasons, ", "))
-}
-
-// removeAll reports the first refusal rather than a tally: git declines a dirty
-// checkout or an unmerged branch, and that is worth reading in full.
-func removeAll(candidates []cleanup.Candidate) tea.Msg {
-	removed := 0
-	for _, c := range candidates {
-		if err := cleanup.Remove(c); err != nil {
-			return cleanedMsg{removed: removed, err: err}
-		}
-		removed++
-	}
-	return cleanedMsg{removed: removed}
+func removeAll(plan cleanup.Plan) tea.Msg {
+	removed, err := plan.Apply(nil)
+	return cleanedMsg{removed: removed, err: err}
 }
 
 func Run() error {
@@ -203,15 +162,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setNotice(failStyle, msg.err.Error())
 			return m, nil
 		}
-		if len(msg.removable) == 0 {
-			m.setNotice(dimStyle, keptNotice(msg.kept))
+		if len(msg.plan.Removable) == 0 {
+			m.setNotice(dimStyle, msg.plan.Summary())
 			return m, nil
 		}
 		// Held until answered: the board asks the same question the CLI does
 		// rather than deleting because a key was pressed.
-		m.pending = msg.removable
+		plan := msg.plan
+		m.pending = &plan
 		m.setNotice(dimStyle, fmt.Sprintf(
-			"remove %d merged worktree(s) and their branches? y/n", len(msg.removable)))
+			"remove %d merged worktree(s) and their branches? y/n", len(plan.Removable)))
 		return m, nil
 	case cleanedMsg:
 		m.pending = nil
@@ -224,8 +184,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// A pending confirmation owns the keyboard until it is answered, so no
 		// stray j/k acts on a board that is asking a question.
-		if len(m.pending) > 0 {
-			pending := m.pending
+		if m.pending != nil {
+			pending := *m.pending
 			if msg.String() == "y" {
 				m.setNotice(dimStyle, "removing…")
 				return m, func() tea.Msg { return removeAll(pending) }

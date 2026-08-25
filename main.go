@@ -117,7 +117,7 @@ func list() error {
 	}
 	printDiagnostics(cfg)
 	printCollisions(cfg)
-	printWorktreeCount(cfg)
+	printWorktrees(cfg)
 	return nil
 }
 
@@ -135,26 +135,17 @@ func printDiagnostics(cfg *config.Config) {
 	}
 }
 
-// printWorktreeCount says how many run worktrees are lying around and how many
-// still have a workspace open — the ones nobody has read yet. It counts and
-// tells; removing them stays an explicit command.
-func printWorktreeCount(cfg *config.Config) {
-	candidates, err := cleanup.Scan(cfg)
-	if err != nil || len(candidates) == 0 {
+// printWorktrees says what state the run worktrees are in, and only mentions
+// the command when there is something for it to do. It counts and tells;
+// removing them stays an explicit act.
+func printWorktrees(cfg *config.Config) {
+	plan, err := cleanup.Scan(cfg)
+	if err != nil || plan.Empty() {
 		return
 	}
-	unread, removable := 0, 0
-	for _, c := range candidates {
-		switch {
-		case c.Verdict == cleanup.KeptOpen:
-			unread++
-		case c.Removable():
-			removable++
-		}
-	}
-	line := fmt.Sprintf("\n%d run worktrees, %d still open", len(candidates), unread)
-	if removable > 0 {
-		line += fmt.Sprintf(", %d merged — herdr-automations cleanup", removable)
+	line := "\n" + plan.Summary()
+	if len(plan.Removable) > 0 {
+		line += " — herdr-automations cleanup"
 	}
 	fmt.Println(line)
 }
@@ -193,47 +184,41 @@ func cleanupCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	candidates, err := cleanup.Scan(cfg)
+	plan, err := cleanup.Scan(cfg)
 	if err != nil {
 		return err
 	}
-	if len(candidates) == 0 {
+	if plan.Empty() {
 		fmt.Println("No run worktrees.")
 		return nil
 	}
 
-	var removable []cleanup.Candidate
-	for _, c := range candidates {
+	for _, c := range plan.All() {
 		mark := "keep"
-		if c.Removable() {
+		if c.Verdict == cleanup.Removable {
 			mark = "remove"
-			removable = append(removable, c)
 		}
 		fmt.Printf("%-7s %-48s %s\n", mark, c.Branch, c.Verdict)
 	}
-	if len(removable) == 0 {
-		fmt.Println("\nNothing to remove.")
+	if len(plan.Removable) == 0 {
+		fmt.Println("\n" + plan.Summary())
 		return nil
 	}
 
 	if dryRun {
-		fmt.Printf("\n%d would be removed. Drop --dry-run to do it.\n", len(removable))
+		fmt.Printf("\n%d would be removed. Drop --dry-run to do it.\n", len(plan.Removable))
 		return nil
 	}
 	if !assumeYes {
-		fmt.Printf("\nRemove %d worktree(s) and their branches? [y/N] ", len(removable))
+		fmt.Printf("\nRemove %d worktree(s) and their branches? [y/N] ", len(plan.Removable))
 		var answer string
 		if _, err := fmt.Scanln(&answer); err != nil || !strings.EqualFold(answer, "y") {
 			fmt.Println("Nothing removed.")
 			return nil
 		}
 	}
-	for _, c := range removable {
-		if err := cleanup.Remove(c); err != nil {
-			fmt.Fprintln(os.Stderr, "kept:", err)
-			continue
-		}
-		fmt.Println("removed", c.Branch)
+	if _, err := plan.Apply(func(c cleanup.Candidate) { fmt.Println("removed", c.Branch) }); err != nil {
+		return fmt.Errorf("kept: %w", err)
 	}
 	return nil
 }
