@@ -2,7 +2,7 @@
 
 What changed for someone using the plugin. Dates are release dates.
 
-## Unreleased
+## v0.5.0 — 2026-08-25
 
 - One bad entry in `automations.yaml` no longer stops the others. A typo in the
   seventh automation used to fail the whole file, and the daemon's answer was a
