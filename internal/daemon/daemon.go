@@ -33,21 +33,22 @@ func Run() error {
 	log.Printf("daemon starting, config=%s", config.Path())
 	state := loadState()
 	binary := binaryStamp()
+	runs := runner.Default()
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	tick := time.NewTicker(tickInterval)
 	defer tick.Stop()
 
-	evaluate(state) // don't wait a full tick to notice what is already due
+	evaluate(state, runs) // don't wait a full tick to notice what is already due
 
 	for {
 		select {
 		case <-tick.C:
 			if stamp := binaryStamp(); stamp != binary && stamp != "" {
-				restart(release)
+				restart(release, runs)
 			}
-			evaluate(state)
+			evaluate(state, runs)
 		case s := <-sigs:
 			log.Printf("received %v, shutting down", s)
 			return nil
@@ -57,7 +58,7 @@ func Run() error {
 
 // evaluate fires every automation whose occurrence has come due, and records
 // the ones that came due too long ago to still be worth running.
-func evaluate(state *scheduleState) {
+func evaluate(state *scheduleState, runs *runner.Runner) {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Printf("config error, leaving the schedule untouched: %v", err)
@@ -120,7 +121,7 @@ func evaluate(state *scheduleState) {
 			log.Printf("%s: running %s late", a.Name, lateness.Round(time.Minute))
 		}
 		go func(a config.Automation, trigger string) {
-			if err := runner.Run(a, trigger); err != nil {
+			if err := runs.Run(a, trigger); err != nil {
 				log.Printf("run %s: %v", a.Name, err)
 			}
 		}(a, trigger)
@@ -157,8 +158,8 @@ func recordMissed(name string, count int, why string) {
 
 // restart re-executes the daemon so a plugin upgrade takes effect without
 // waiting for the Herdr server to be restarted.
-func restart(release func()) {
-	if runner.Busy() {
+func restart(release func(), runs *runner.Runner) {
+	if runs.Busy() {
 		return // let the in-flight run finish; we'll notice again next tick
 	}
 	exe, err := os.Executable()

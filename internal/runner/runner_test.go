@@ -1,214 +1,249 @@
 package runner
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/DnzzL/herdr-automations/internal/herdr"
+	"github.com/DnzzL/herdr-automations/internal/config"
 	"github.com/DnzzL/herdr-automations/internal/history"
+	"github.com/DnzzL/herdr-automations/internal/host"
 )
 
-// paneBusy is the error herdr returns for a pane whose shell has not spawned.
-func paneBusy() error {
-	return &herdr.APIError{
-		Command: "agent start",
-		Code:    herdr.CodePaneBusy,
-		Message: "agent target pane w1T:p1 is not an available shell",
-	}
+// fakeHost stands in for the machine. A nil field means the step works.
+type fakeHost struct {
+	provision func(config.Automation) (host.Session, error)
+	do        func(host.Session, config.Automation, time.Duration) error
+
+	mu       sync.Mutex
+	timeouts []time.Duration
 }
 
-func TestStartAgentRetriesUntilThePaneHasAShell(t *testing.T) {
-	paneReadyPoll = time.Millisecond
-	calls := 0
-	err := startAgent(func() error {
-		calls++
-		if calls < 3 {
-			return paneBusy()
-		}
+func (f *fakeHost) Provision(a config.Automation) (host.Session, error) {
+	if f.provision == nil {
+		return host.Session{WorkspaceID: "w1", PaneID: "w1:p1"}, nil
+	}
+	return f.provision(a)
+}
+
+func (f *fakeHost) Do(s host.Session, a config.Automation, timeout time.Duration) error {
+	f.mu.Lock()
+	f.timeouts = append(f.timeouts, timeout)
+	f.mu.Unlock()
+	if f.do == nil {
 		return nil
-	}, time.Minute)
+	}
+	return f.do(s, a, timeout)
+}
 
+// runs is the history as the board and `history` would read it back.
+func runs(t *testing.T) []history.Record {
+	t.Helper()
+	out, err := history.Runs("", 0)
 	if err != nil {
-		t.Fatalf("want the third attempt to stick, got %v", err)
+		t.Fatal(err)
 	}
-	if calls != 3 {
-		t.Errorf("called %d times, want 3", calls)
+	return out
+}
+
+// statuses is every status written for an automation, oldest first. It reads
+// the log raw: history.Runs collapses each run to its latest state, which is
+// what the board wants and the opposite of what this asserts.
+func statuses(t *testing.T, name string) []history.Status {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(config.StateDir(), "history.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []history.Status
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var r history.Record
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			t.Fatalf("unreadable history line %q: %v", line, err)
+		}
+		if r.Automation == name {
+			out = append(out, r.Status)
+		}
+	}
+	return out
+}
+
+func automation() config.Automation {
+	return config.Automation{
+		Name: "triage", Cron: "@daily", Repo: "/repo", Agent: "claude",
+		Workspace: config.WorkspaceWorktree, Prompt: "go", TimeoutMinutes: 45,
 	}
 }
 
-func TestStartAgentGivesUpOnAPaneThatNeverComesUp(t *testing.T) {
-	paneReadyPoll = time.Millisecond
-	calls := 0
-	err := startAgent(func() error { calls++; return paneBusy() }, 20*time.Millisecond)
+func TestRunRecordsTheWholeTrailOfASuccessfulRun(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	h := &fakeHost{}
 
-	if !herdr.HasCode(err, herdr.CodePaneBusy) {
-		t.Fatalf("want the busy error reported, got %v", err)
+	if err := New(h).Run(automation(), "cron"); err != nil {
+		t.Fatal(err)
 	}
-	if calls < 2 {
-		t.Errorf("called %d times, want more than one attempt", calls)
+
+	// One run ID, collapsing to done, with the workspace it happened in
+	// attached — that last part is what the board's `enter` jumps to.
+	got := runs(t)
+	if len(got) != 1 {
+		t.Fatalf("want a single run, got %d: %+v", len(got), got)
+	}
+	if got[0].Status != history.StatusDone {
+		t.Errorf("status = %q, want done", got[0].Status)
+	}
+	if got[0].WorkspaceID != "w1" || got[0].PaneID != "w1:p1" {
+		t.Errorf("run recorded without a workspace to jump to: %+v", got[0])
+	}
+	if got[0].Trigger != "cron" {
+		t.Errorf("trigger = %q", got[0].Trigger)
+	}
+	if len(h.timeouts) != 1 || h.timeouts[0] != 45*time.Minute {
+		t.Errorf("timeouts = %v, want the automation's 45m", h.timeouts)
 	}
 }
 
-func TestStartAgentDoesNotRetryARealFailure(t *testing.T) {
-	paneReadyPoll = time.Millisecond
-	calls := 0
-	want := errors.New("agent start: unknown kind \"clyde\"")
-	err := startAgent(func() error { calls++; return want }, time.Minute)
+func TestRunPassesThroughScheduledAndRunning(t *testing.T) {
+	// The board reads the latest state per run, so a run that is still working
+	// has to have said so. Losing the running record makes an in-flight run
+	// look like it never started.
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
 
-	if !errors.Is(err, want) {
-		t.Fatalf("got %v, want it passed through", err)
+	if err := New(&fakeHost{}).Run(automation(), "manual"); err != nil {
+		t.Fatal(err)
 	}
-	if calls != 1 {
-		t.Errorf("called %d times, want 1: a bad agent kind will not fix itself", calls)
-	}
-}
 
-func TestStartAgentDoesNotWaitWhenThePaneIsReady(t *testing.T) {
-	calls := 0
-	if err := startAgent(func() error { calls++; return nil }, 0); err != nil {
-		t.Fatalf("got %v", err)
+	want := []history.Status{history.StatusScheduled, history.StatusRunning, history.StatusDone}
+	got := statuses(t, "triage")
+	if len(got) != len(want) {
+		t.Fatalf("trail = %v, want %v", got, want)
 	}
-	if calls != 1 {
-		t.Errorf("called %d times, want 1", calls)
-	}
-}
-
-func TestSlugProducesValidBranchNames(t *testing.T) {
-	cases := map[string]string{
-		"Weekly sprint planning": "weekly-sprint-planning",
-		"issue-triage":           "issue-triage",
-		"Deps  bump!!":           "deps-bump",
-		"  ~weird/name~  ":       "weird-name",
-		"???":                    "automation",
-	}
-	for in, want := range cases {
-		if got := slug(in); got != want {
-			t.Errorf("slug(%q) = %q, want %q", in, got, want)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("trail = %v, want %v", got, want)
 		}
 	}
 }
 
-func TestExitCodeIgnoresTheEchoedCommand(t *testing.T) {
-	marker := "HWF-123"
-	// The shell echoes the command before running it, so the literal printf
-	// format is on screen alongside the real status.
-	screen := "$ sh -c 'hwf run x; printf \"\\nHWF-123:%d\\n\" $?'\n" +
-		"running workflow x…\n" +
-		"HWF-123:0\n"
-	code, done := exitCode(screen, marker)
-	if !done || code != 0 {
-		t.Fatalf("got (%d, %v), want (0, true)", code, done)
-	}
-}
+func TestRunRecordsAFailureToProvision(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	h := &fakeHost{provision: func(config.Automation) (host.Session, error) {
+		return host.Session{}, errors.New("worktree create: fatal: not a git repository")
+	}}
 
-func TestExitCodeWaitsWhileNothingIsPrinted(t *testing.T) {
-	if _, done := exitCode("still working…\n", "HWF-123"); done {
-		t.Fatal("a workflow still running must not be read as finished")
-	}
-}
-
-func TestExitCodeTakesTheLastRun(t *testing.T) {
-	code, done := exitCode("HWF-9:0\nsecond attempt\nHWF-9:2\n", "HWF-9")
-	if !done || code != 2 {
-		t.Fatalf("got (%d, %v), want (2, true)", code, done)
-	}
-}
-
-func TestShellQuoteSurvivesAnApostrophe(t *testing.T) {
-	if got := shellQuote("it's"); got != `'it'\''s'` {
-		t.Fatalf("got %s", got)
-	}
-}
-
-// agentGone is what herdr returns once there is no agent in the pane.
-func agentGone() error {
-	return &herdr.APIError{
-		Command: "agent wait",
-		Code:    herdr.CodeAgentGone,
-		Message: "agent is no longer running in the target pane",
-	}
-}
-
-// sliceExpired stands in for a wait that timed out with the agent still busy.
-func sliceExpired() error {
-	return &herdr.APIError{Command: "agent wait", Code: "timeout"}
-}
-
-func TestWaitForAgentReturnsWhenTheAgentSettles(t *testing.T) {
-	calls := 0
-	err := waitForAgent(func(time.Duration) error {
-		calls++
-		if calls < 3 {
-			return sliceExpired()
-		}
-		return nil
-	}, time.Hour)
-
-	if err != nil {
-		t.Fatalf("got %v, want the settled agent reported as success", err)
-	}
-}
-
-func TestWaitForAgentGivesUpAsSoonAsTheWorkspaceIsClosed(t *testing.T) {
-	// The failure this exists for: a run cancelled seconds in used to hold its
-	// inFlight slot for the whole timeout. One slice is all it should cost now.
-	calls := 0
-	err := waitForAgent(func(time.Duration) error { calls++; return agentGone() }, time.Hour)
-
-	if !errors.Is(err, ErrCancelled) {
-		t.Fatalf("got %v, want ErrCancelled", err)
-	}
-	if calls != 1 {
-		t.Errorf("called %d times, want 1: it should not wait out the timeout", calls)
-	}
-}
-
-func TestWaitForAgentNeverWaitsPastTheDeadline(t *testing.T) {
-	// The fake sleeps the slice it is handed, as herdr does, so wall-clock time
-	// is what bounds the loop.
-	agentWaitSlice = 10 * time.Millisecond
-	const timeout = 50 * time.Millisecond
-
-	var asked []time.Duration
-	started := time.Now()
-	err := waitForAgent(func(d time.Duration) error {
-		asked = append(asked, d)
-		time.Sleep(d)
-		return sliceExpired()
-	}, timeout)
-
+	err := New(h).Run(automation(), "cron")
 	if err == nil {
-		t.Fatal("want the timeout reported")
+		t.Fatal("want the provisioning error returned")
 	}
-	for _, d := range asked {
-		if d <= 0 {
-			t.Fatalf("asked herdr to wait %s", d)
-		}
-		if d > agentWaitSlice {
-			t.Fatalf("asked herdr to wait %s, longer than one slice", d)
-		}
+	last := runs(t)[0]
+	if last.Status != history.StatusFailed {
+		t.Errorf("status = %q, want failed", last.Status)
 	}
-	// Generous: this asserts the deadline is honoured, not the scheduler's
-	// precision.
-	if elapsed := time.Since(started); elapsed > 4*timeout {
-		t.Errorf("took %s for a %s timeout", elapsed, timeout)
+	if last.Error == "" {
+		t.Error("a failed run has to say why")
 	}
 }
 
-func TestWaitForAgentReportsWhatHerdrLastSaid(t *testing.T) {
-	// Better to surface herdr's own last word than a generic "still working".
-	agentWaitSlice = time.Millisecond
-	err := waitForAgent(func(time.Duration) error { return sliceExpired() }, 2*time.Millisecond)
+func TestRunRecordsAClosedWorkspaceAsCancelledNotFailed(t *testing.T) {
+	// Closing a run's workspace is how you call one off. Nothing broke,
+	// somebody decided — and the board dims it rather than colouring it red.
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	h := &fakeHost{do: func(host.Session, config.Automation, time.Duration) error {
+		return fmt.Errorf("waiting for the agent: %w", host.ErrCancelled)
+	}}
 
-	if !herdr.HasCode(err, "timeout") {
-		t.Fatalf("got %v, want herdr's last error kept", err)
+	if err := New(h).Run(automation(), "cron"); err == nil {
+		t.Fatal("want the cancellation returned")
+	}
+	if got := runs(t)[0].Status; got != history.StatusCancelled {
+		t.Errorf("status = %q, want cancelled", got)
+	}
+}
+
+func TestRunSkipsAnAutomationThatIsStillWorking(t *testing.T) {
+	// The 9:00 run is still going at 10:00: the occurrence is dropped, not
+	// queued, and the drop is recorded so it isn't a silent absence.
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	h := &fakeHost{do: func(host.Session, config.Automation, time.Duration) error {
+		close(entered)
+		<-release
+		return nil
+	}}
+	r := New(h)
+
+	go func() { _ = r.Run(automation(), "cron") }()
+	<-entered
+
+	if !r.Busy() {
+		t.Error("Busy() = false with a run in flight")
+	}
+	err := r.Run(automation(), "cron")
+	if err == nil {
+		t.Fatal("want the second run refused")
+	}
+	close(release)
+
+	var skipped bool
+	for _, rec := range runs(t) {
+		if rec.Status == history.StatusSkipped {
+			skipped = true
+		}
+	}
+	if !skipped {
+		t.Error("a skipped occurrence has to leave a record")
+	}
+}
+
+func TestRunLetsADifferentAutomationThrough(t *testing.T) {
+	// The in-flight set is per automation: a nightly job holding a slot must
+	// not block the morning triage.
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	h := &fakeHost{do: func(_ host.Session, a config.Automation, _ time.Duration) error {
+		if a.Name == "triage" {
+			close(entered)
+			<-release
+		}
+		return nil
+	}}
+	r := New(h)
+
+	go func() { _ = r.Run(automation(), "cron") }()
+	<-entered
+
+	other := automation()
+	other.Name = "nightly"
+	if err := r.Run(other, "cron"); err != nil {
+		t.Fatalf("a different automation was blocked: %v", err)
+	}
+	close(release)
+}
+
+func TestBusyIsFalseOnceARunFinishes(t *testing.T) {
+	// The daemon re-execs itself on a plugin upgrade only when nothing is in
+	// flight. A slot that leaks means it never upgrades.
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	r := New(&fakeHost{do: func(host.Session, config.Automation, time.Duration) error {
+		return errors.New("boom")
+	}})
+
+	_ = r.Run(automation(), "cron")
+	if r.Busy() {
+		t.Error("Busy() = true after the run failed: the slot leaked")
 	}
 }
 
 func TestStatusForSeparatesACancellationFromAFailure(t *testing.T) {
-	cancelled := fmt.Errorf("waiting for the agent: %w", ErrCancelled)
+	cancelled := fmt.Errorf("waiting for the agent: %w", host.ErrCancelled)
 	if got := statusFor(cancelled); got != history.StatusCancelled {
 		t.Errorf("a closed workspace recorded as %q, want cancelled", got)
 	}

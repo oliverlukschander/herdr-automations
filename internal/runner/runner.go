@@ -1,343 +1,94 @@
-// Package runner executes one automation end to end: provision a workspace,
-// start the agent, submit the prompt (or delegate to herdr-workflows), and
-// record every state transition in the history log.
+// Package runner executes one automation end to end and records every state
+// transition in the history log. What it means to provision a workspace or get
+// an agent to do something lives behind the host seam; what is left here is the
+// lifecycle: skip an overlapping run, record what happened, decide whether a
+// failure was a failure at all.
 package runner
 
 import (
 	"errors"
 	"fmt"
 	"log"
-	"os/exec"
-	"regexp"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/DnzzL/herdr-automations/internal/config"
-	"github.com/DnzzL/herdr-automations/internal/herdr"
 	"github.com/DnzzL/herdr-automations/internal/history"
+	"github.com/DnzzL/herdr-automations/internal/host"
 )
 
-// inFlight guards against overlapping runs of the same automation: if the
-// 9:00 run is still working at 10:00, the 10:00 tick is skipped, not queued.
-var inFlight sync.Map
+// Runner runs automations on a host. It holds the in-flight set, which used to
+// be a package global that the daemon reached into to decide whether it could
+// re-exec itself.
+type Runner struct {
+	host     host.Host
+	inFlight sync.Map
+}
+
+// New returns a Runner that works through h.
+func New(h host.Host) *Runner { return &Runner{host: h} }
+
+// Default returns a Runner driving the real Herdr.
+func Default() *Runner { return New(host.New()) }
 
 // Busy reports whether any automation is mid-run.
-func Busy() bool {
+func (r *Runner) Busy() bool {
 	busy := false
-	inFlight.Range(func(_, _ any) bool { busy = true; return false })
+	r.inFlight.Range(func(_, _ any) bool { busy = true; return false })
 	return busy
 }
 
 // Run executes the automation synchronously. trigger is "cron", "catchup" or
 // "manual".
-func Run(a config.Automation, trigger string) error {
-	if _, busy := inFlight.LoadOrStore(a.Name, true); busy {
-		record(runID(a.Name), a.Name, trigger, history.StatusSkipped, "", "",
+//
+// Overlapping runs of the same automation are skipped rather than queued: if
+// the 9:00 run is still working at 10:00, the 10:00 occurrence is dropped and
+// recorded as such.
+func (r *Runner) Run(a config.Automation, trigger string) error {
+	if _, busy := r.inFlight.LoadOrStore(a.Name, true); busy {
+		record(runID(a.Name), a.Name, trigger, history.StatusSkipped, host.Session{},
 			"previous run still in flight")
 		return fmt.Errorf("%s: previous run still in flight, skipped", a.Name)
 	}
-	defer inFlight.Delete(a.Name)
+	defer r.inFlight.Delete(a.Name)
 
 	id := runID(a.Name)
-	record(id, a.Name, trigger, history.StatusScheduled, "", "", "")
+	record(id, a.Name, trigger, history.StatusScheduled, host.Session{}, "")
 
-	workspaceID, paneID, err := provision(a)
+	session, err := r.host.Provision(a)
 	if err != nil {
-		record(id, a.Name, trigger, history.StatusFailed, workspaceID, "", err.Error())
+		record(id, a.Name, trigger, history.StatusFailed,
+			host.Session{WorkspaceID: session.WorkspaceID}, err.Error())
 		return err
 	}
-	record(id, a.Name, trigger, history.StatusRunning, workspaceID, paneID, "")
+	record(id, a.Name, trigger, history.StatusRunning, session, "")
 
-	if err := execute(a, paneID); err != nil {
-		record(id, a.Name, trigger, statusFor(err), workspaceID, paneID, err.Error())
+	timeout := time.Duration(a.TimeoutMinutes) * time.Minute
+	if err := r.host.Do(session, a, timeout); err != nil {
+		record(id, a.Name, trigger, statusFor(err), session, err.Error())
 		return err
 	}
-	record(id, a.Name, trigger, history.StatusDone, workspaceID, paneID, "")
+	record(id, a.Name, trigger, history.StatusDone, session, "")
 	return nil
 }
 
 // statusFor decides how a run that ended in err is remembered. Only a workspace
 // closed under the run is not a failure.
 func statusFor(err error) history.Status {
-	if errors.Is(err, ErrCancelled) {
+	if errors.Is(err, host.ErrCancelled) {
 		return history.StatusCancelled
 	}
 	return history.StatusFailed
-}
-
-func provision(a config.Automation) (workspaceID, paneID string, err error) {
-	label := "auto: " + a.Name
-	switch a.Workspace {
-	case config.WorkspaceWorktree:
-		branch := fmt.Sprintf("auto/%s-%s", slug(a.Name), time.Now().Format("20060102-1504"))
-		workspaceID, paneID, err = herdr.WorktreeCreate(a.Repo, branch, label)
-	case config.WorkspaceRoot:
-		workspaceID, paneID, err = herdr.WorkspaceCreate(a.Repo, label)
-	}
-	return workspaceID, paneID, err
-}
-
-func execute(a config.Automation, paneID string) error {
-	timeout := time.Duration(a.TimeoutMinutes) * time.Minute
-
-	if a.Workflow != "" {
-		// Delegation: herdr-workflows owns multi-step execution.
-		return runWorkflow(paneID, a.Workflow, timeout)
-	}
-
-	args := a.AgentArgs
-	if a.Model != "" {
-		args = append([]string{"--model", a.Model}, args...)
-	}
-	if a.MCPConfig != "" {
-		args = append([]string{"--mcp-config", a.MCPConfig}, args...)
-	}
-	// Herdr requires agent names to be lowercase, 1-32 chars, [a-z0-9-_].
-	start := func() error {
-		return herdr.AgentStart(agentName(a.Name), a.Agent, paneID, args)
-	}
-	if err := startAgent(start, paneReady); err != nil {
-		return fmt.Errorf("start %s agent: %w", a.Agent, err)
-	}
-	if err := submit(paneID, a.Prompt); err != nil {
-		return err
-	}
-	wait := func(d time.Duration) error { return herdr.AgentWait(paneID, d) }
-	if err := waitForAgent(wait, timeout); err != nil {
-		return fmt.Errorf("waiting for the agent: %w", err)
-	}
-	return nil
-}
-
-// ErrCancelled means the run's workspace was closed while it was working.
-// Closing it is the gesture for calling a run off, so the run is reported
-// cancelled rather than failed.
-var ErrCancelled = errors.New("the run's workspace was closed")
-
-// agentWaitSlice bounds one herdr wait call. herdr reports a vanished pane only
-// when the call it was given returns, so this is how long a cancelled run keeps
-// a slot in inFlight — not something to make long.
-var agentWaitSlice = 30 * time.Second
-
-// waitForAgent blocks until the agent settles, the run is cancelled, or the
-// timeout runs out.
-//
-// It waits in slices rather than handing herdr the whole timeout at once. A run
-// whose workspace was closed thirteen seconds in used to sit here for the full
-// forty-five minutes before anyone was told, holding the automation's inFlight
-// slot the whole time and skipping the next occurrence.
-func waitForAgent(wait func(time.Duration) error, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	var last error
-	for {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			if last != nil {
-				return last
-			}
-			return fmt.Errorf("the agent was still working after %s", timeout)
-		}
-		slice := agentWaitSlice
-		if remaining < slice {
-			slice = remaining
-		}
-
-		err := wait(slice)
-		if err == nil {
-			return nil
-		}
-		if herdr.HasCode(err, herdr.CodeAgentGone) {
-			return ErrCancelled
-		}
-		// The slice expired with the agent still working, which is the normal
-		// case. Keep it: if the deadline passes it is the most accurate thing
-		// we have to report.
-		last = err
-	}
-}
-
-// runWorkflow hands the run to herdr-workflows and waits for its verdict.
-//
-// A pane has no exit code to return, so the command is asked to print one
-// behind a marker and the screen is read back for it. Without that, launching
-// the command successfully was indistinguishable from the workflow succeeding,
-// and a `workflow:` automation reported done whatever happened — including
-// when hwf was not installed at all.
-func runWorkflow(paneID, name string, timeout time.Duration) error {
-	if _, err := exec.LookPath("hwf"); err != nil {
-		return fmt.Errorf("workflow %q needs herdr-workflows: hwf is not on PATH", name)
-	}
-
-	marker := fmt.Sprintf("HWF-%d", time.Now().UnixNano())
-	// The shell echoes the command it was given, so the marker appears twice on
-	// screen: once as this literal (with %d unexpanded) and once with the real
-	// status. Only the latter matches a digit, which is what exitCode looks for.
-	command := fmt.Sprintf("hwf run %s; printf '\\n%s:%%d\\n' $?", shellQuote(name), marker)
-	if err := herdr.PaneRun(paneID, "sh", "-c", command); err != nil {
-		return fmt.Errorf("running workflow %s: %w", name, err)
-	}
-
-	deadline := time.Now().Add(timeout)
-	for {
-		screen, err := herdr.PaneRead(paneID, 200)
-		if err == nil {
-			if code, done := exitCode(screen, marker); done {
-				if code != 0 {
-					return fmt.Errorf("workflow %s exited %d", name, code)
-				}
-				return nil
-			}
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("workflow %s did not finish within %s", name, timeout)
-		}
-		time.Sleep(5 * time.Second)
-	}
-}
-
-// exitCode finds the status the marker was printed with. The last match wins:
-// a pane may hold output from an earlier run of the same automation.
-func exitCode(screen, marker string) (int, bool) {
-	matches := regexp.MustCompile(regexp.QuoteMeta(marker)+`:(\d+)`).FindAllStringSubmatch(screen, -1)
-	if len(matches) == 0 {
-		return 0, false
-	}
-	code, err := strconv.Atoi(matches[len(matches)-1][1])
-	if err != nil {
-		return 0, false
-	}
-	return code, true
-}
-
-// shellQuote makes a workflow name safe to interpolate into the sh -c string.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
-// paneReady is how long a freshly provisioned pane gets to become a shell.
-// Creating the workspace normally hands one back in milliseconds; the wait
-// exists for the run that starts as the machine wakes, where herdr answered
-// `worktree create` a quarter of an hour after it was asked and the pane's
-// shell was still not up.
-const paneReady = 2 * time.Minute
-
-// paneReadyPoll is the gap between attempts. A variable so tests don't sleep.
-var paneReadyPoll = 5 * time.Second
-
-// startAgent launches the agent, retrying while herdr says the pane is not a
-// shell yet. Any other error is final — a bad agent kind or a missing binary
-// will not fix itself, and retrying only delays the report.
-func startAgent(start func() error, within time.Duration) error {
-	deadline := time.Now().Add(within)
-	for {
-		err := start()
-		if err == nil || !herdr.HasCode(err, herdr.CodePaneBusy) {
-			return err
-		}
-		if !time.Now().Before(deadline) {
-			return err
-		}
-		log.Printf("pane has no shell yet, retrying agent start in %s", paneReadyPoll)
-		time.Sleep(paneReadyPoll)
-	}
-}
-
-// submit gets the prompt in front of the agent and confirms it started working.
-//
-// A freshly started agent is reported ready before it can actually accept
-// input — it may still be connecting MCP servers, especially right after the
-// machine wakes. herdr then reports agent_prompt_stalled even though the text
-// reached the composer, so each step here verifies the status rather than
-// trusting the previous call's verdict.
-func submit(paneID, prompt string) error {
-	err := herdr.AgentSubmit(paneID, prompt)
-	if err == nil {
-		return nil
-	}
-	if !herdr.HasCode(err, herdr.CodeStalled) {
-		return fmt.Errorf("prompt: %w", err)
-	}
-
-	// The text is probably in the composer, just not submitted. Give the agent
-	// a moment, then press Enter for it, then fall back to typing it again.
-	if working(paneID, 20*time.Second) {
-		return nil
-	}
-	log.Printf("prompt stalled on %s, submitting the pending composer", paneID)
-	if err := herdr.AgentSubmitPending(paneID); err != nil {
-		return fmt.Errorf("prompt: %w", err)
-	}
-	if working(paneID, 20*time.Second) {
-		return nil
-	}
-
-	log.Printf("still idle on %s, retyping the prompt", paneID)
-	if err := herdr.AgentSubmit(paneID, prompt); err != nil && !herdr.HasCode(err, herdr.CodeStalled) {
-		return fmt.Errorf("prompt: %w", err)
-	}
-	if working(paneID, 30*time.Second) {
-		return nil
-	}
-	return fmt.Errorf("prompt: the agent never started working; it may still be initialising")
-}
-
-// working polls until the agent leaves idle, or the window closes.
-func working(paneID string, within time.Duration) bool {
-	deadline := time.Now().Add(within)
-	for {
-		status, err := herdr.AgentStatus(paneID)
-		if err == nil && status != "idle" && status != "unknown" {
-			return true
-		}
-		if time.Now().After(deadline) {
-			return false
-		}
-		time.Sleep(2 * time.Second)
-	}
-}
-
-// slug makes a name safe for a git branch: spaces and the characters
-// git check-ref-format rejects would otherwise fail worktree creation.
-func slug(name string) string {
-	var b strings.Builder
-	lastDash := true // also trims leading dashes
-	for _, r := range strings.ToLower(name) {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_':
-			b.WriteRune(r)
-			lastDash = false
-		case !lastDash:
-			b.WriteByte('-')
-			lastDash = true
-		}
-	}
-	out := strings.Trim(b.String(), "-")
-	if out == "" {
-		return "automation"
-	}
-	return out
-}
-
-// agentName fits an automation name into Herdr's agent-name rules: lowercase,
-// [a-z0-9-_], at most 32 characters.
-func agentName(name string) string {
-	s := slug(name)
-	if len(s) > 32 {
-		s = strings.Trim(s[:32], "-")
-	}
-	return s
 }
 
 func runID(name string) string {
 	return fmt.Sprintf("%s-%d", name, time.Now().UnixNano())
 }
 
-func record(id, name, trigger string, st history.Status, wsID, paneID, errMsg string) {
+func record(id, name, trigger string, st history.Status, s host.Session, errMsg string) {
 	err := history.Append(history.Record{
 		RunID: id, Automation: name, Trigger: trigger, Status: st, At: time.Now(),
-		WorkspaceID: wsID, PaneID: paneID, Error: errMsg,
+		WorkspaceID: s.WorkspaceID, PaneID: s.PaneID, Error: errMsg,
 	})
 	if err != nil {
 		log.Printf("history append failed: %v", err)

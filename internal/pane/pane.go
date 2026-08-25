@@ -32,6 +32,9 @@ type row struct {
 }
 
 type model struct {
+	// runs is the board's Runner: `r` runs an automation through the same
+	// lifecycle the daemon uses, in-flight set included.
+	runs        *runner.Runner
 	rows        []row
 	cursor      int
 	width       int
@@ -48,7 +51,10 @@ type ranMsg struct{ err error }
 type editedMsg struct{ err error }
 type scannedMsg struct {
 	removable []cleanup.Candidate
-	err       error
+	// kept carries the worktrees that stay, so a scan that removes nothing can
+	// say why instead of reading like there was nothing there at all.
+	kept []cleanup.Candidate
+	err  error
 }
 type cleanedMsg struct {
 	removed int
@@ -67,13 +73,37 @@ func scanCleanup() tea.Msg {
 	if err != nil {
 		return scannedMsg{err: err}
 	}
-	var removable []cleanup.Candidate
+	var removable, kept []cleanup.Candidate
 	for _, c := range candidates {
 		if c.Removable() {
 			removable = append(removable, c)
+		} else {
+			kept = append(kept, c)
 		}
 	}
-	return scannedMsg{removable: removable}
+	return scannedMsg{removable: removable, kept: kept}
+}
+
+// keptNotice explains a scan that removes nothing. "Nothing to remove" alone
+// reads as "no run worktrees exist", which sends you looking for worktrees that
+// are in fact right there, held back for a reason worth naming.
+func keptNotice(kept []cleanup.Candidate) string {
+	if len(kept) == 0 {
+		return "no run worktrees — nothing to remove"
+	}
+	counts := map[cleanup.Verdict]int{}
+	var order []cleanup.Verdict
+	for _, c := range kept {
+		if counts[c.Verdict] == 0 {
+			order = append(order, c.Verdict)
+		}
+		counts[c.Verdict]++
+	}
+	reasons := make([]string, 0, len(order))
+	for _, v := range order {
+		reasons = append(reasons, fmt.Sprintf("%d %s", counts[v], v))
+	}
+	return fmt.Sprintf("nothing to remove: %s", strings.Join(reasons, ", "))
 }
 
 // removeAll reports the first refusal rather than a tally: git declines a dirty
@@ -90,7 +120,9 @@ func removeAll(candidates []cleanup.Candidate) tea.Msg {
 }
 
 func Run() error {
-	_, err := tea.NewProgram(load(), tea.WithAltScreen()).Run()
+	m := load()
+	m.runs = runner.Default()
+	_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
 	return err
 }
 
@@ -121,6 +153,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case refreshMsg:
 		next := load()
+		next.runs = m.runs
 		if next.cursor = m.cursor; next.cursor >= len(next.rows) {
 			next.cursor = max(0, len(next.rows)-1)
 		}
@@ -132,6 +165,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return next, tick()
 	case editedMsg:
 		next := load() // pick up whatever was just saved, including new entries
+		next.runs = m.runs
 		next.cursor = min(m.cursor, max(0, len(next.rows)-1))
 		if msg.err != nil {
 			next.setNotice(failStyle, msg.err.Error())
@@ -152,7 +186,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if len(msg.removable) == 0 {
-			m.setNotice(dimStyle, "no run worktree is finished with — nothing to remove")
+			m.setNotice(dimStyle, keptNotice(msg.kept))
 			return m, nil
 		}
 		// Held until answered: the board asks the same question the CLI does
@@ -202,7 +236,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor < len(m.rows) {
 				a := m.rows[m.cursor].auto
 				m.setNotice(dimStyle, "running "+a.Name+"…")
-				return m, func() tea.Msg { return ranMsg{err: runner.Run(a, "manual")} }
+				runs := m.runs
+				return m, func() tea.Msg { return ranMsg{err: runs.Run(a, "manual")} }
 			}
 		case "e":
 			// Open the YAML in $EDITOR at the selected automation's line,

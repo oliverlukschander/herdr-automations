@@ -236,13 +236,13 @@ func runCmd(args []string) error {
 		if _, err := fmt.Scanln(&n); err != nil || n < 1 || n > len(cfg.Automations) {
 			return fmt.Errorf("invalid selection")
 		}
-		return runner.Run(cfg.Automations[n-1], "manual")
+		return runner.Default().Run(cfg.Automations[n-1], "manual")
 	}
 	a := cfg.Find(args[0])
 	if a == nil {
 		return fmt.Errorf("no automation named %q", args[0])
 	}
-	return runner.Run(*a, "manual")
+	return runner.Default().Run(*a, "manual")
 }
 
 func showHistory(name string) error {
