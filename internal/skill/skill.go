@@ -8,31 +8,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/DnzzL/herdr-automations/internal/hostpath"
 )
 
 const dirName = "herdr-automations"
 
-// Root locates the plugin checkout: Herdr sets it, otherwise derive it from
-// the binary's location (bin/herdr-automations lives inside the checkout).
-func Root() (string, error) {
-	if r := os.Getenv("HERDR_PLUGIN_ROOT"); r != "" {
-		return r, nil
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return "", err
-	}
-	exe, err = filepath.EvalSymlinks(exe)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Dir(filepath.Dir(exe)), nil
-}
-
 // Install symlinks the bundled skill into target (default ~/.claude/skills) so
 // it tracks plugin upgrades instead of going stale.
 func Install(target string) error {
-	root, err := Root()
+	root, err := hostpath.Root()
 	if err != nil {
 		return err
 	}

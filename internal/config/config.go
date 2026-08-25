@@ -6,7 +6,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -14,6 +13,8 @@ import (
 
 	"github.com/robfig/cron/v3"
 	"gopkg.in/yaml.v3"
+
+	"github.com/DnzzL/herdr-automations/internal/hostpath"
 )
 
 // CronParser accepts the standard 5-field crontab syntax plus descriptors
@@ -130,42 +131,11 @@ var modelFlagKinds = map[string]bool{
 // KindAcceptsModel reports whether this agent kind understands `--model`.
 func KindAcceptsModel(kind string) bool { return modelFlagKinds[kind] }
 
-// PluginID must match the id in herdr-plugin.toml: it locates the same
-// directories Herdr hands the daemon when the CLI is run from a plain shell.
-const PluginID = "dnzzl.automations"
+// Dir is where automations.yaml lives.
+func Dir() string { return hostpath.ConfigDir() }
 
-// Dir resolves the config directory. Under Herdr the env var is authoritative;
-// from a plain shell we ask the herdr CLI, so `herdr-automations list` in a
-// terminal always sees what the daemon sees.
-func Dir() string {
-	if d := os.Getenv("HERDR_PLUGIN_CONFIG_DIR"); d != "" {
-		return d
-	}
-	if out, err := exec.Command(herdrBin(), "plugin", "config-dir", PluginID).Output(); err == nil {
-		if d := strings.TrimSpace(string(out)); d != "" {
-			return d
-		}
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "herdr", "plugins", "config", PluginID)
-}
-
-// StateDir resolves where run history lives. Herdr exposes no state-dir
-// command, so outside a plugin context we mirror its layout.
-func StateDir() string {
-	if d := os.Getenv("HERDR_PLUGIN_STATE_DIR"); d != "" {
-		return d
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "state", "herdr", "plugins", PluginID)
-}
-
-func herdrBin() string {
-	if b := os.Getenv("HERDR_BIN_PATH"); b != "" {
-		return b
-	}
-	return "herdr"
-}
+// StateDir is where run history and scheduler state live.
+func StateDir() string { return hostpath.StateDir() }
 
 func Path() string { return filepath.Join(Dir(), "automations.yaml") }
 

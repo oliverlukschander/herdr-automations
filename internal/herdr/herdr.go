@@ -1,7 +1,5 @@
 // Package herdr is a thin client over the herdr CLI (which itself fronts the
-// socket API). Herdr injects HERDR_BIN_PATH for plugins; outside a plugin
-// context, or when that path no longer resolves, we fall back to `herdr` on
-// PATH.
+// socket API). Where that binary lives is hostpath's problem.
 package herdr
 
 import (
@@ -9,34 +7,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/DnzzL/herdr-automations/internal/hostpath"
 )
-
-// bin locates the herdr CLI. HERDR_BIN_PATH is herdr telling a plugin exactly
-// which binary to call back into, so it wins — but only if it still exists. A
-// long-running herdr whose binary was moved or uninstalled under it (a package
-// manager switch, say) keeps advertising the old path, and taking it on faith
-// made every call fail with a fork/exec error the user could do nothing about.
-func bin() string {
-	if b := os.Getenv("HERDR_BIN_PATH"); b != "" && usable(b) {
-		return b
-	}
-	return "herdr"
-}
-
-// usable reports whether path is something we could actually execute.
-func usable(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
-}
 
 // run executes a herdr subcommand and decodes the socket-API JSON envelope
 // ({"id": ..., "result": {...}}) into out when out is non-nil.
 func run(out any, args ...string) error {
-	cmd := exec.Command(bin(), args...)
+	cmd := exec.Command(hostpath.Bin(), args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -267,7 +248,7 @@ func PaneRun(paneID string, command ...string) error {
 // channel a delegated command has, so this is how its result gets read back.
 // Unlike the rest of the API this one prints the screen, not a JSON envelope.
 func PaneRead(paneID string, lines int) (string, error) {
-	cmd := exec.Command(bin(), "pane", "read", paneID,
+	cmd := exec.Command(hostpath.Bin(), "pane", "read", paneID,
 		"--source", "recent", "--lines", fmt.Sprintf("%d", lines), "--format", "text")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
