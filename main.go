@@ -14,6 +14,7 @@ import (
 	"github.com/DnzzL/herdr-automations/internal/history"
 	"github.com/DnzzL/herdr-automations/internal/pane"
 	"github.com/DnzzL/herdr-automations/internal/runner"
+	"github.com/DnzzL/herdr-automations/internal/schedule"
 	"github.com/DnzzL/herdr-automations/internal/skill"
 	"github.com/DnzzL/herdr-automations/internal/wizard"
 )
@@ -162,7 +163,7 @@ func printWorktreeCount(cfg *config.Config) {
 // runs them all — this is a report, not a warning about something the plugin
 // is about to do differently.
 func printCollisions(cfg *config.Config) {
-	clashes := cfg.Collisions()
+	clashes := schedule.Collisions(cfg, time.Now())
 	if len(clashes) == 0 {
 		return
 	}

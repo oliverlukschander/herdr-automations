@@ -16,6 +16,7 @@ import (
 	"github.com/DnzzL/herdr-automations/internal/herdr"
 	"github.com/DnzzL/herdr-automations/internal/history"
 	"github.com/DnzzL/herdr-automations/internal/runner"
+	"github.com/DnzzL/herdr-automations/internal/schedule"
 )
 
 var (
@@ -390,11 +391,11 @@ func statusStyle(r row) lipgloss.Style {
 }
 
 func nextRun(a config.Automation) string {
-	sched, err := config.CronParser.Parse(a.Cron)
-	if err != nil {
+	next, ok := schedule.NextRun(a, time.Now())
+	if !ok {
 		return ""
 	}
-	return "next " + sched.Next(time.Now()).Format("Mon 15:04")
+	return "next " + next.Format("Mon 15:04")
 }
 
 func truncate(s string, n int) string {

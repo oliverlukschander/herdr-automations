@@ -7,35 +7,11 @@ import (
 	"time"
 
 	"github.com/DnzzL/herdr-automations/internal/config"
-	"github.com/robfig/cron/v3"
 )
 
-// due reports the most recent occurrence at or before now, how many earlier
-// occurrences were skipped along the way, and whether anything is due at all.
-//
-// This is deliberately wall-clock arithmetic rather than a timer: on a laptop,
-// macOS suspends the monotonic clock during sleep, so a timer armed for "in 15
-// hours" fires 15 hours of *awake* time later — which is how a 9am Monday run
-// silently never happened.
-func due(sched cron.Schedule, last, now time.Time) (occ time.Time, skipped int, ok bool) {
-	next := sched.Next(last)
-	if next.After(now) {
-		return time.Time{}, 0, false
-	}
-	occ = next
-	for {
-		n := sched.Next(occ)
-		if n.After(now) {
-			break
-		}
-		skipped++
-		occ = n
-	}
-	return occ, skipped, true
-}
-
-// scheduleState remembers the last occurrence each automation was evaluated
-// for, so restarts and sleeps don't replay or lose runs.
+// scheduleState is schedule.State on disk, plus the diagnostics already
+// reported. Restarts and sleeps must not replay or lose runs, which is the only
+// reason any of it is persisted.
 type scheduleState struct {
 	LastOccurrence map[string]time.Time `json:"last_occurrence"`
 	// Invalid is the set of diagnostics already reported, so an unfixed typo

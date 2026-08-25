@@ -1,7 +1,9 @@
 // Package daemon is the long-running scheduler started by the plugin's startup
-// hook. It re-reads automations.yaml as it changes, fires occurrences off the
-// wall clock (so a sleeping laptop delays runs instead of losing them), and
-// re-executes itself when the plugin binary is upgraded underneath it.
+// hook. Every tick it re-reads automations.yaml, asks the schedule module what
+// should happen now, and does it. It re-executes itself when the plugin binary
+// is upgraded underneath it.
+//
+// Deciding is schedule's job; this package is the part with the side effects.
 package daemon
 
 import (
@@ -15,6 +17,7 @@ import (
 	"github.com/DnzzL/herdr-automations/internal/config"
 	"github.com/DnzzL/herdr-automations/internal/history"
 	"github.com/DnzzL/herdr-automations/internal/runner"
+	"github.com/DnzzL/herdr-automations/internal/schedule"
 )
 
 // tickInterval is how often the wall clock is consulted. Short enough that a
@@ -56,85 +59,39 @@ func Run() error {
 	}
 }
 
-// evaluate fires every automation whose occurrence has come due, and records
-// the ones that came due too long ago to still be worth running.
+// evaluate asks the schedule what should happen now, and does it.
 func evaluate(state *scheduleState, runs *runner.Runner) {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Printf("config error, leaving the schedule untouched: %v", err)
 		return
 	}
-
 	dirty := reportInvalid(cfg, state)
 
-	now := time.Now()
-	live := map[string]bool{}
+	res := schedule.Plan(cfg, schedule.State{LastOccurrence: state.LastOccurrence}, time.Now())
+	state.LastOccurrence = res.State.LastOccurrence
+	dirty = dirty || res.Changed
 
-	for _, a := range cfg.Automations {
-		live[a.Name] = true
-		if a.Disabled {
-			continue
-		}
-		sched, err := config.CronParser.Parse(a.Cron)
-		if err != nil {
-			log.Printf("%s: %v", a.Name, err) // Load validated it; be defensive
-			continue
-		}
-
-		last, seen := state.LastOccurrence[a.Name]
-		if !seen {
-			// A new automation starts counting from now: adding one should
-			// never retroactively fire this morning's occurrence.
-			state.LastOccurrence[a.Name] = now
-			dirty = true
-			log.Printf("%s: scheduled, next run %s",
-				a.Name, sched.Next(now).Format(time.RFC1123))
-			continue
-		}
-
-		occ, skipped, ok := due(sched, last, now)
-		if !ok {
-			continue
-		}
-		state.LastOccurrence[a.Name] = occ
-		dirty = true
-
-		if skipped > 0 {
-			recordMissed(a.Name, skipped, "machine unavailable")
-			log.Printf("%s: %d earlier occurrence(s) missed", a.Name, skipped)
-		}
-
-		lateness := now.Sub(occ)
-		if lateness > a.CatchUp() {
-			window := fmt.Sprintf("past the %s catch-up window", a.CatchUp())
-			if a.CatchUp() == 0 {
-				window = "catch-up disabled"
+	for _, d := range res.Decisions {
+		switch d.Kind {
+		case schedule.Register:
+			log.Printf("%s: scheduled, next run %s", d.Automation.Name, d.At.Format(time.RFC1123))
+		case schedule.Missed:
+			recordMissed(d.Automation.Name, d.Count, d.Reason)
+			log.Printf("%s: missed (%s)", d.Automation.Name, d.Reason)
+		case schedule.Fire:
+			if d.Trigger == "catchup" {
+				log.Printf("%s: running %s late", d.Automation.Name,
+					time.Since(d.At).Round(time.Minute))
 			}
-			recordMissed(a.Name, 1, fmt.Sprintf("due %s ago, %s",
-				lateness.Round(time.Minute), window))
-			log.Printf("%s: missed (%s late)", a.Name, lateness.Round(time.Minute))
-			continue
+			go func(a config.Automation, trigger string) {
+				if err := runs.Run(a, trigger); err != nil {
+					log.Printf("run %s: %v", a.Name, err)
+				}
+			}(d.Automation, d.Trigger)
 		}
-
-		trigger := "cron"
-		if lateness > time.Minute {
-			trigger = "catchup"
-			log.Printf("%s: running %s late", a.Name, lateness.Round(time.Minute))
-		}
-		go func(a config.Automation, trigger string) {
-			if err := runs.Run(a, trigger); err != nil {
-				log.Printf("run %s: %v", a.Name, err)
-			}
-		}(a, trigger)
 	}
 
-	// Forget automations that are gone, so re-adding one later starts clean.
-	for name := range state.LastOccurrence {
-		if !live[name] {
-			delete(state.LastOccurrence, name)
-			dirty = true
-		}
-	}
 	if dirty {
 		if err := state.save(); err != nil {
 			log.Printf("saving schedule state: %v", err)

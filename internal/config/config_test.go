@@ -165,41 +165,52 @@ automations:
 	}
 }
 
-func TestCollisionsReportsSharedOccurrencesOnce(t *testing.T) {
-	withConfig(t, `
+func TestLoadDiagnosesBadEntries(t *testing.T) {
+	cases := map[string]string{
+		"bad cron": `
 automations:
-  - {name: early, cron: "0 6 * * *", repo: /x, prompt: p}
-  - {name: also-early, cron: "0 6 * * *", repo: /x, prompt: p}
-  - {name: alone, cron: "0 14 * * *", repo: /x, prompt: p}
-  - {name: off, cron: "0 6 * * *", repo: /x, prompt: p, disabled: true}`)
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	clashes := cfg.Collisions()
-	// Both are daily, so they clash seven times over the horizon — but that is
-	// one fact about the schedule, not seven.
-	if len(clashes) != 1 {
-		t.Fatalf("expected a single deduped collision, got %d: %+v", len(clashes), clashes)
-	}
-	if len(clashes[0].Names) != 2 {
-		t.Fatalf("disabled entries must not collide: %+v", clashes[0].Names)
-	}
-}
-
-func TestCollidesWithNamesTheClashingAutomations(t *testing.T) {
-	withConfig(t, `
+  - {name: a, cron: "not a cron", repo: /x, prompt: p}`,
+		"prompt and workflow": `
 automations:
-  - {name: sprint, cron: "0 9 * * 1", repo: /x, prompt: p}
-  - {name: nightly, cron: "0 3 * * *", repo: /x, prompt: p}`)
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
+  - {name: a, cron: "@daily", repo: /x, prompt: p, workflow: w}`,
+		"neither prompt nor workflow": `
+automations:
+  - {name: a, cron: "@daily", repo: /x}`,
+		"duplicate names": `
+automations:
+  - {name: a, cron: "@daily", repo: /x, prompt: p}
+  - {name: a, cron: "@daily", repo: /x, prompt: p}`,
+		"bad workspace": `
+automations:
+  - {name: a, cron: "@daily", repo: /x, prompt: p, workspace: sandbox}`,
+		"model on a kind that takes none": `
+automations:
+  - {name: a, cron: "@daily", repo: /x, prompt: p, agent: droid, model: opus}`,
+		"no name": `
+automations:
+  - {cron: "@daily", repo: /x, prompt: p}`,
+		"no repo": `
+automations:
+  - {name: a, cron: "@daily", prompt: p}`,
 	}
-	if got := cfg.CollidesWith("0 9 * * 1"); len(got) != 1 || got[0] != "sprint" {
-		t.Fatalf("expected sprint, got %v", got)
-	}
-	if got := cfg.CollidesWith("30 9 * * 1"); len(got) != 0 {
-		t.Fatalf("expected no clash, got %v", got)
+	for label, yaml := range cases {
+		t.Run(label, func(t *testing.T) {
+			withConfig(t, yaml)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("want a diagnostic, not a failed load: %v", err)
+			}
+			if len(cfg.Invalid) != 1 {
+				t.Fatalf("diagnostics = %+v, want one for %s", cfg.Invalid, label)
+			}
+			// A duplicate keeps the first entry; everything else keeps none.
+			want := 0
+			if label == "duplicate names" {
+				want = 1
+			}
+			if len(cfg.Automations) != want {
+				t.Fatalf("%s: loaded %d entries, want %d", label, len(cfg.Automations), want)
+			}
+		})
 	}
 }

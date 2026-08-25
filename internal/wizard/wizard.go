@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/DnzzL/herdr-automations/internal/config"
+	"github.com/DnzzL/herdr-automations/internal/schedule"
 )
 
 func Run() error {
@@ -47,7 +48,7 @@ func Run() error {
 		}
 		// Herdr runs every due automation; the scheduler never holds one back.
 		// Saying so here is the only moment the cron is still up for debate.
-		if clash := cfg.CollidesWith(cronExpr); len(clash) > 0 {
+		if clash := schedule.CollidesWith(cfg, cronExpr, time.Now()); len(clash) > 0 {
 			fmt.Printf("  heads up: %s already due at the same time — they will all run at once\n",
 				strings.Join(clash, ", "))
 		}

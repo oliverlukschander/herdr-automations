@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -264,98 +263,6 @@ func Save(cfg *Config) error {
 		return err
 	}
 	return os.WriteFile(Path(), out, 0o644)
-}
-
-// Collision is a moment when more than one automation comes due. Herdr is a
-// multi-agent runtime and the scheduler honours the cron literally: every one
-// of them starts. Nothing here serialises anything — the point is to show the
-// overlap while the cron is still yours to change.
-type Collision struct {
-	At    time.Time
-	Names []string
-}
-
-// collisionHorizon is how far ahead overlaps are looked for: far enough to
-// catch weekly schedules, near enough that the answer still means something.
-const collisionHorizon = 7 * 24 * time.Hour
-
-// maxOccurrences bounds the walk so a per-minute cron cannot spin the report.
-const maxOccurrences = 2000
-
-// Collisions reports overlapping occurrences over the next week, one entry
-// per distinct set of automations rather than one per occurrence: two @daily
-// entries that clash are a single fact, not seven.
-func (c *Config) Collisions() []Collision {
-	from := time.Now()
-	byMoment := map[int64][]string{}
-	for _, a := range c.Automations {
-		if a.Disabled {
-			continue
-		}
-		for _, t := range occurrences(a.Cron, from) {
-			byMoment[t.Unix()] = append(byMoment[t.Unix()], a.Name)
-		}
-	}
-
-	var out []Collision
-	for unix, names := range byMoment {
-		if len(names) < 2 {
-			continue
-		}
-		out = append(out, Collision{At: time.Unix(unix, 0), Names: names})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
-
-	seen := map[string]bool{}
-	deduped := out[:0]
-	for _, col := range out {
-		key := strings.Join(col.Names, "\x00")
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		deduped = append(deduped, col)
-	}
-	return deduped
-}
-
-// CollidesWith names the enabled automations that would share an occurrence
-// with cronExpr in the next week. The wizard asks before writing, so the
-// warning lands while the schedule is still being decided.
-func (c *Config) CollidesWith(cronExpr string) []string {
-	from := time.Now()
-	moments := map[int64]bool{}
-	for _, t := range occurrences(cronExpr, from) {
-		moments[t.Unix()] = true
-	}
-	var names []string
-	for _, a := range c.Automations {
-		if a.Disabled {
-			continue
-		}
-		for _, t := range occurrences(a.Cron, from) {
-			if moments[t.Unix()] {
-				names = append(names, a.Name)
-				break
-			}
-		}
-	}
-	return names
-}
-
-// occurrences walks a cron expression over the collision horizon. An invalid
-// expression yields nothing: validation is Load's job, not this report's.
-func occurrences(expr string, from time.Time) []time.Time {
-	sched, err := CronParser.Parse(expr)
-	if err != nil {
-		return nil
-	}
-	deadline := from.Add(collisionHorizon)
-	var out []time.Time
-	for t := sched.Next(from); !t.After(deadline) && len(out) < maxOccurrences; t = sched.Next(t) {
-		out = append(out, t)
-	}
-	return out
 }
 
 // Find returns the automation named name, or nil.
