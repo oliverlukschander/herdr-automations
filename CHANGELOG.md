@@ -2,6 +2,14 @@
 
 What changed for someone using the plugin. Dates are release dates.
 
+## v0.6.0 — 2026-08-31
+
+- `herdr-automations pause <name>` / `resume <name>` stop and restart an
+  automation without hand-editing `automations.yaml`. The board's `p` key does
+  the same for the row under your cursor. Both just toggle the `disabled` flag
+  that already existed in the file, so anything that already reads it (`list`,
+  the board) shows the change immediately.
+
 ## v0.5.0 — 2026-08-25
 
 - One bad entry in `automations.yaml` no longer stops the others. A typo in the

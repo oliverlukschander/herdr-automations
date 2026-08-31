@@ -29,6 +29,8 @@ Usage:
   herdr-automations add              Interactive wizard: create an automation
   herdr-automations list             List automations with schedule and last run
   herdr-automations run <name>       Trigger an automation now
+  herdr-automations pause <name>     Stop scheduling an automation
+  herdr-automations resume <name>    Resume a paused automation
   herdr-automations history [name]   Show recent runs
   herdr-automations cleanup          Remove run worktrees whose work already landed
   herdr-automations pane             Interactive board (used by the Herdr pane)
@@ -56,6 +58,10 @@ func main() {
 		err = cleanupCmd(os.Args[2:])
 	case "run":
 		err = runCmd(os.Args[2:])
+	case "pause":
+		err = pauseCmd(os.Args[2:], true)
+	case "resume":
+		err = pauseCmd(os.Args[2:], false)
 	case "history":
 		name := ""
 		if len(os.Args) > 2 {
@@ -254,6 +260,36 @@ func runCmd(args []string) error {
 		return fmt.Errorf("no automation named %q", args[0])
 	}
 	return runner.Default().Run(*a, history.TriggerManual)
+}
+
+// pauseCmd toggles Disabled on a single automation and persists it. It shares
+// the config's own guardrail: Save refuses while any entry in the file failed
+// to load, so a broken sibling entry blocks this too.
+func pauseCmd(args []string, disabled bool) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: herdr-automations %s <name>", map[bool]string{true: "pause", false: "resume"}[disabled])
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	a := cfg.Find(args[0])
+	if a == nil {
+		if d := cfg.Diagnostic(args[0]); d != nil {
+			return fmt.Errorf("%s did not load: %s", args[0], d)
+		}
+		return fmt.Errorf("no automation named %q", args[0])
+	}
+	a.Disabled = disabled
+	if err := config.Save(cfg); err != nil {
+		return err
+	}
+	verb := "Resumed"
+	if disabled {
+		verb = "Paused"
+	}
+	fmt.Printf("%s %s\n", verb, a.Name)
+	return nil
 }
 
 func showHistory(name string) error {

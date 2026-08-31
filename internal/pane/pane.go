@@ -145,6 +145,22 @@ func removeAll(plan cleanup.Plan) tea.Msg {
 	return cleanedMsg{removed: removed, err: err}
 }
 
+// togglePause flips Disabled for the named automation and saves the config.
+// It reports through editedMsg so the board reloads exactly as it does after
+// `e`: the file on disk is the source of truth, not the in-memory row.
+func togglePause(name string) tea.Msg {
+	cfg, err := config.Load()
+	if err != nil {
+		return editedMsg{err: err}
+	}
+	a := cfg.Find(name)
+	if a == nil {
+		return editedMsg{err: fmt.Errorf("no automation named %q", name)}
+	}
+	a.Disabled = !a.Disabled
+	return editedMsg{err: config.Save(cfg)}
+}
+
 func Run() error {
 	m := load()
 	m.runs = runner.Default()
@@ -280,6 +296,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				runs := m.runs
 				return m, func() tea.Msg { return ranMsg{err: runs.Run(a, history.TriggerManual)} }
 			}
+		case "p":
+			if m.cursor < len(m.rows) {
+				r := m.rows[m.cursor]
+				if r.broke() {
+					m.setNotice(failStyle, r.diag.String())
+					return m, nil
+				}
+				verb := "pausing "
+				if r.auto.Disabled {
+					verb = "resuming "
+				}
+				m.setNotice(dimStyle, verb+r.name+"…")
+				name := r.name
+				return m, func() tea.Msg { return togglePause(name) }
+			}
 		case "e":
 			// Open the YAML in $EDITOR at the selected automation's line,
 			// taking over the pane until the editor exits.
@@ -335,7 +366,7 @@ func (m model) noticeLine() string {
 
 func (m model) View() string {
 	s := titleStyle.Render("Automations") +
-		dimStyle.Render("  r: run · enter: jump to last run · e: edit · c: cleanup · j/k: move · q: quit") + "\n\n"
+		dimStyle.Render("  r: run · p: pause/resume · enter: jump to last run · e: edit · c: cleanup · j/k: move · q: quit") + "\n\n"
 	if m.err != nil {
 		return s + failStyle.Render("config error: "+m.err.Error()) + "\n"
 	}
