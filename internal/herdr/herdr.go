@@ -258,6 +258,44 @@ func (Client) Focus(workspaceID, paneID string) error {
 	return nil
 }
 
+// Sound is which of herdr's notification sounds a toast plays.
+type Sound string
+
+const (
+	SoundNone    Sound = "none"
+	SoundDone    Sound = "done"
+	SoundRequest Sound = "request"
+)
+
+// notificationTimeout bounds a toast. A local socket call needs milliseconds;
+// three seconds is the point past which a wedged herdr is costing a finished
+// run something.
+const notificationTimeout = 3 * time.Second
+
+// notificationPosition: the board is an overlay pane and list prints at the
+// bottom, so a toast goes top-right and covers neither.
+const notificationPosition = "top-right"
+
+// notificationArgs assembles the toast's argv. Split out because the one thing
+// worth pinning — an empty body producing no --body flag rather than an empty
+// one — is testable with no herdr to talk to.
+func notificationArgs(title, body string, sound Sound) []string {
+	args := []string{"notification", "show", title}
+	if body != "" {
+		args = append(args, "--body", body)
+	}
+	args = append(args, "--position", notificationPosition, "--sound", string(sound))
+	return args
+}
+
+// NotificationShow raises an in-session Herdr toast. In-session is the whole
+// caveat: a panel in the Herdr window, not an OS notification.
+func (Client) NotificationShow(title, body string, sound Sound) error {
+	ctx, cancel := context.WithTimeout(context.Background(), notificationTimeout)
+	defer cancel()
+	return runCtx(ctx, nil, notificationArgs(title, body, sound)...)
+}
+
 // PaneRun executes a shell command in a pane (used to delegate to hwf).
 func (Client) PaneRun(paneID string, command ...string) error {
 	return run(nil, append([]string{"pane", "run", paneID}, command...)...)

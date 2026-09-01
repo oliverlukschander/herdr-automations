@@ -45,3 +45,26 @@ func TestNewAPIErrorSurvivesANilExecError(t *testing.T) {
 		t.Fatal("want an error even with nothing to say")
 	}
 }
+
+func TestNotificationArgsOmitsAnEmptyBody(t *testing.T) {
+	got := notificationArgs("triage failed", "", SoundRequest)
+	for _, a := range got {
+		if a == "--body" {
+			t.Fatalf("args = %v, want no --body flag for an empty body", got)
+		}
+	}
+}
+
+func TestNotificationArgsPassesTheTitleAsAPositionalArgument(t *testing.T) {
+	got := notificationArgs("triage failed", "boom", SoundRequest)
+	want := []string{"notification", "show", "triage failed",
+		"--body", "boom", "--position", notificationPosition, "--sound", "request"}
+	if len(got) != len(want) {
+		t.Fatalf("args = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("args = %v, want %v", got, want)
+		}
+	}
+}
