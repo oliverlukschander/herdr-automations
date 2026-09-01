@@ -202,7 +202,7 @@ automations:
   - {name: a, cron: "@daily", repo: /x, prompt: p, workspace: sandbox}`,
 		"model on a kind that takes none": `
 automations:
-  - {name: a, cron: "@daily", repo: /x, prompt: p, agent: droid, model: opus}`,
+  - {name: a, cron: "@daily", repo: /x, prompt: p, agent: pi, model: opus}`,
 		"no name": `
 automations:
   - {cron: "@daily", repo: /x, prompt: p}`,
