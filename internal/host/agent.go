@@ -143,11 +143,32 @@ func (w agentWork) await(s Session, timeout time.Duration) error {
 			return nil
 		}
 		if w.ops.HasCode(err, herdr.CodeAgentGone) {
-			return ErrCancelled
+			return w.agentGoneOutcome(s)
 		}
 		// The slice expired with the agent still working, which is the normal
 		// case. Keep it: if the deadline passes it is the most accurate thing
 		// we have to report.
 		last = err
 	}
+}
+
+// agentGoneOutcome disambiguates herdr's agent_not_running: it means either
+// the workspace was closed, or the agent process died inside a workspace that
+// is still open. herdr.go documents both under the same code, but only the
+// first is a cancellation — the second is a crash, and reporting it as
+// "cancelled" hides it behind the one status the plugin deliberately never
+// notifies about.
+func (w agentWork) agentGoneOutcome(s Session) error {
+	_, err := w.ops.AgentStatus(s.PaneID)
+	if err == nil {
+		// The pane is alive and answered, so nothing closed the workspace —
+		// the agent itself is what is missing.
+		return fmt.Errorf("the agent exited before finishing")
+	}
+	if w.ops.HasCode(err, herdr.CodeWorkspaceGone) {
+		return ErrCancelled
+	}
+	// Unreadable for some other reason: not enough to call it a crash, so keep
+	// the existing behaviour rather than turning a doubt into a failure.
+	return ErrCancelled
 }

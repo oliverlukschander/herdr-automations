@@ -218,9 +218,10 @@ func TestAwaitReturnsWhenTheAgentSettles(t *testing.T) {
 func TestAwaitGivesUpAsSoonAsTheWorkspaceIsClosed(t *testing.T) {
 	// The failure this exists for: a run cancelled seconds in used to hold its
 	// in-flight slot for the whole timeout. One slice is all it should cost now.
-	ops := &fakeOps{agentWait: func(string, time.Duration) error {
-		return apiErr("agent wait", herdr.CodeAgentGone)
-	}}
+	ops := &fakeOps{
+		agentWait:   func(string, time.Duration) error { return apiErr("agent wait", herdr.CodeAgentGone) },
+		agentStatus: func(string) (string, error) { return "", apiErr("agent get", herdr.CodeWorkspaceGone) },
+	}
 
 	err := agentWorkWith(ops, config.Automation{}).await(Session{PaneID: "p"}, time.Hour)
 	if !errors.Is(err, ErrCancelled) {
@@ -228,6 +229,45 @@ func TestAwaitGivesUpAsSoonAsTheWorkspaceIsClosed(t *testing.T) {
 	}
 	if ops.waits != 1 {
 		t.Errorf("waited %d times, want 1: it should not wait out the timeout", ops.waits)
+	}
+}
+
+func TestAwaitCallsAnAgentThatDiedInALiveWorkspaceAFailure(t *testing.T) {
+	ops := &fakeOps{
+		agentWait:   func(string, time.Duration) error { return apiErr("agent wait", herdr.CodeAgentGone) },
+		agentStatus: func(string) (string, error) { return "idle", nil },
+	}
+
+	err := agentWorkWith(ops, config.Automation{}).await(Session{PaneID: "p"}, time.Hour)
+	if errors.Is(err, ErrCancelled) {
+		t.Fatalf("got ErrCancelled, want a real failure: the workspace answered, so the agent crashed")
+	}
+	if err == nil {
+		t.Fatal("want an error for a dead agent")
+	}
+}
+
+func TestAwaitStillCallsAClosedWorkspaceACancellation(t *testing.T) {
+	ops := &fakeOps{
+		agentWait:   func(string, time.Duration) error { return apiErr("agent wait", herdr.CodeAgentGone) },
+		agentStatus: func(string) (string, error) { return "", apiErr("agent get", herdr.CodeWorkspaceGone) },
+	}
+
+	err := agentWorkWith(ops, config.Automation{}).await(Session{PaneID: "p"}, time.Hour)
+	if !errors.Is(err, ErrCancelled) {
+		t.Fatalf("got %v, want ErrCancelled: this is the closed-workspace case, unchanged", err)
+	}
+}
+
+func TestAwaitTreatsAnUnreadableStatusAsACancellation(t *testing.T) {
+	ops := &fakeOps{
+		agentWait:   func(string, time.Duration) error { return apiErr("agent wait", herdr.CodeAgentGone) },
+		agentStatus: func(string) (string, error) { return "", apiErr("agent get", "some_other_error") },
+	}
+
+	err := agentWorkWith(ops, config.Automation{}).await(Session{PaneID: "p"}, time.Hour)
+	if !errors.Is(err, ErrCancelled) {
+		t.Fatalf("got %v, want ErrCancelled: a doubt should not be turned into a failure", err)
 	}
 }
 
