@@ -2,7 +2,7 @@
 
 What changed for someone using the plugin. Dates are release dates.
 
-## Unreleased
+## v0.7.0 — 2026-09-01
 
 - A run that fails, a run that's missed, or a broken `automations.yaml` entry
   now raises a Herdr toast — in-session only, a panel inside the Herdr window,
