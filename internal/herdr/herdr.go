@@ -8,6 +8,7 @@ package herdr
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,7 +25,13 @@ type Client struct{}
 // run executes a herdr subcommand and decodes the socket-API JSON envelope
 // ({"id": ..., "result": {...}}) into out when out is non-nil.
 func run(out any, args ...string) error {
-	cmd := exec.Command(hostpath.Bin(), args...)
+	return runCtx(context.Background(), out, args...)
+}
+
+// runCtx is run with a context, so a caller that cannot afford to block
+// forever — a toast, not a run step — can bound it.
+func runCtx(ctx context.Context, out any, args ...string) error {
+	cmd := exec.CommandContext(ctx, hostpath.Bin(), args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
