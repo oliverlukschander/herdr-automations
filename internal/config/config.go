@@ -155,12 +155,23 @@ func (a *Automation) validate() error {
 // forwards the flag verbatim, so a model: on any other kind would make the
 // agent refuse to start — better to fail here, while the file is being
 // written, than at 3am inside a scheduler goroutine.
+//
+// This is a known-good allowlist, not a gate: `herdr agent start --help`
+// accepts more kinds than this table lists (see ADR 0003), and a kind missing
+// here is a false rejection, not a safety net doing its job.
 var modelFlagKinds = map[string]bool{
 	"claude":   true,
 	"codex":    true,
 	"cursor":   true,
 	"gemini":   true,
 	"opencode": true,
+	"grok":     true,
+	"qwen":     true,
+	"kimi":     true,
+	"amp":      true,
+	"droid":    true,
+	"copilot":  true,
+	"hermes":   true,
 }
 
 // KindAcceptsModel reports whether this agent kind understands `--model`.

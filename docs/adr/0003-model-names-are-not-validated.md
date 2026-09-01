@@ -24,3 +24,7 @@ the agent's own message.
 
 - A typo'd model surfaces as a failed run, not a diagnostic.
 - `modelFlagKinds` still needs updating when a new agent kind appears.
+- `modelFlagKinds` is a known-good allowlist, not a safety gate: `herdr agent
+  start --kind` accepts far more kinds than this table lists (22, as of Herdr
+  0.8.2), so a kind missing here is a false rejection of a valid config, not a
+  guard catching a real mistake.

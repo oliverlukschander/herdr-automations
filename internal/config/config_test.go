@@ -165,6 +165,23 @@ automations:
 	}
 }
 
+func TestModelFlagKindsAreKindsHerdrKnows(t *testing.T) {
+	// `herdr agent start --kind` as of Herdr 0.8.2 — a hardcoded snapshot, not a
+	// live check, so this only ever catches a typo in modelFlagKinds itself.
+	herdrKnows := map[string]bool{
+		"pi": true, "claude": true, "codex": true, "gemini": true, "cursor": true,
+		"devin": true, "agy": true, "cline": true, "omp": true, "mastracode": true,
+		"opencode": true, "copilot": true, "kimi": true, "kiro": true, "droid": true,
+		"amp": true, "grok": true, "hermes": true, "kilo": true, "qodercli": true,
+		"qwen": true, "maki": true,
+	}
+	for kind := range modelFlagKinds {
+		if !herdrKnows[kind] {
+			t.Errorf("modelFlagKinds has %q, which herdr agent start --kind does not accept", kind)
+		}
+	}
+}
+
 func TestLoadDiagnosesBadEntries(t *testing.T) {
 	cases := map[string]string{
 		"bad cron": `
