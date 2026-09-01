@@ -2,6 +2,19 @@
 
 What changed for someone using the plugin. Dates are release dates.
 
+## Unreleased
+
+- A run that fails, a run that's missed, or a broken `automations.yaml` entry
+  now raises a Herdr toast — in-session only, a panel inside the Herdr window,
+  not an OS notification. A successful or skipped run stays quiet on purpose.
+  Missed and broken entries are grouped into one toast per scheduler tick, so a
+  laptop waking from a weekend gets one panel, not twenty.
+- An agent that crashes mid-run is now recorded (and toasted) as `failed`
+  instead of `cancelled`. Previously the board could not tell a crash apart
+  from you closing the workspace on purpose.
+- `model:` on `grok`, `qwen`, `kimi`, `amp`, `droid`, `copilot`, and `hermes`
+  automations no longer fails to load — the allowlist behind it was stale.
+
 ## v0.6.0 — 2026-08-31
 
 - `herdr-automations pause <name>` / `resume <name>` stop and restart an

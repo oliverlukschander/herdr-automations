@@ -247,6 +247,24 @@ func TestAwaitCallsAnAgentThatDiedInALiveWorkspaceAFailure(t *testing.T) {
 	}
 }
 
+func TestAwaitCallsARepeatedAgentGoneAFailureToo(t *testing.T) {
+	// AgentStatus is itself agent-scoped: the most likely answer for a dead
+	// agent in a live workspace is another agent_not_running, not a status
+	// string. That must still land as a crash, not fall through to cancelled.
+	ops := &fakeOps{
+		agentWait:   func(string, time.Duration) error { return apiErr("agent wait", herdr.CodeAgentGone) },
+		agentStatus: func(string) (string, error) { return "", apiErr("agent get", herdr.CodeAgentGone) },
+	}
+
+	err := agentWorkWith(ops, config.Automation{}).await(Session{PaneID: "p"}, time.Hour)
+	if errors.Is(err, ErrCancelled) {
+		t.Fatalf("got ErrCancelled, want a real failure: agent_not_running twice still means the agent crashed")
+	}
+	if err == nil {
+		t.Fatal("want an error for a dead agent")
+	}
+}
+
 func TestAwaitStillCallsAClosedWorkspaceACancellation(t *testing.T) {
 	ops := &fakeOps{
 		agentWait:   func(string, time.Duration) error { return apiErr("agent wait", herdr.CodeAgentGone) },

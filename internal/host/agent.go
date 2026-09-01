@@ -160,15 +160,24 @@ func (w agentWork) await(s Session, timeout time.Duration) error {
 // notifies about.
 func (w agentWork) agentGoneOutcome(s Session) error {
 	_, err := w.ops.AgentStatus(s.PaneID)
-	if err == nil {
+	switch {
+	case err == nil:
 		// The pane is alive and answered, so nothing closed the workspace —
 		// the agent itself is what is missing.
 		return fmt.Errorf("the agent exited before finishing")
-	}
-	if w.ops.HasCode(err, herdr.CodeWorkspaceGone) {
+	case w.ops.HasCode(err, herdr.CodeWorkspaceGone):
+		return ErrCancelled
+	case w.ops.HasCode(err, herdr.CodeAgentGone):
+		// AgentStatus is itself agent-scoped, so a dead agent in a live
+		// workspace is exactly as likely to answer with its own
+		// agent_not_running as with a status string. Either shape means the
+		// same thing: the workspace is fine, the agent is what is gone.
+		return fmt.Errorf("the agent exited before finishing")
+	default:
+		// Unreadable for some other, unrelated reason: not enough to call it
+		// a crash, so keep the existing behaviour rather than turning a doubt
+		// into a failure.
+		log.Printf("could not confirm why %s went silent (%v), recording it as cancelled", s.PaneID, err)
 		return ErrCancelled
 	}
-	// Unreadable for some other reason: not enough to call it a crash, so keep
-	// the existing behaviour rather than turning a doubt into a failure.
-	return ErrCancelled
 }

@@ -230,13 +230,18 @@ workflow and fails when it does, and it refuses to start at all when `hwf` isn't
 installed.
 
 **Event triggers? On push, on PR?** No, and not planned. Herdr's plugin manifest does
-support `[[events]]`, but the events are workspace lifecycle — a worktree opened, a
-pane exited, a tab renamed. There is no git event, no push, no pull request, and no
-webhook endpoint. Turning a GitHub push into a local run means something hosted in
-the middle holding your repo names and listening for the hook, which is the opposite
-of the two paragraphs above. If you want work to happen on push, your forge's CI is
-already there. If you want it locally, a cron automation that polls and does nothing
-when there is nothing new (`gh pr list`, `git fetch`) is one entry in this file.
+support `[[events]]`, but the full list, as of Herdr 0.8.2, is workspace lifecycle and
+nothing else: `worktree.created`, `worktree.removed`, `workspace.created`,
+`workspace.closed`, `workspace.focused`, `workspace.renamed`, `workspace.updated`,
+`pane.created`, `pane.closed`, `pane.exited`, `pane.focused`, `pane.updated`,
+`tab.created`, `tab.closed`, `tab.focused`, `tab.renamed`, `layout.updated`. There is
+no git event, no push, no pull request, and no webhook endpoint. Turning a GitHub push
+into a local run means something hosted in the middle holding your repo names and
+listening for the hook, which is the opposite of the two paragraphs above. If you want
+work to happen on push, your forge's CI is already there. If you want it locally, a
+cron automation that polls and does nothing when there is nothing new (`gh pr list`,
+`git fetch`) is one entry in this file. See [ADR 0008](docs/adr/0008-no-event-triggers.md)
+for the full reasoning.
 
 An automation is one prompt on a clock. That is the whole boundary.
 

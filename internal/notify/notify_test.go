@@ -2,6 +2,7 @@ package notify
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -74,14 +75,19 @@ func TestTickToastsOneLineForManyMissedRuns(t *testing.T) {
 	sink := &fakeSink{}
 	names := make([]string, 20)
 	for i := range names {
-		names[i] = "auto"
+		names[i] = fmt.Sprintf("auto-%d", i)
 	}
 	With(sink).Tick(names, nil)
 	if len(sink.toasts) != 1 {
 		t.Fatalf("toasts = %+v, want exactly one for a whole tick", sink.toasts)
 	}
-	if got := sink.toasts[0].title; got != "20 automations did not run" {
-		t.Errorf("title = %q", got)
+	got := sink.toasts[0]
+	if got.title != "20 automations did not run" {
+		t.Errorf("title = %q", got.title)
+	}
+	want := "auto-0, auto-1, auto-2, and 17 more"
+	if got.body != want {
+		t.Errorf("body = %q, want %q: the first 3 names plus a count of the rest", got.body, want)
 	}
 }
 
