@@ -70,6 +70,10 @@ Exactly one of `prompt` / `workflow` is required.
   (default 120), otherwise they appear as `missed` in the history.
 - `workspace: worktree` means the agent never touches the user's working copy.
   Only choose `root` when the task must see uncommitted local state.
+- A failed run, a missed run, or a broken entry raises a Herdr toast; a
+  successful or skipped run stays quiet on purpose. There is no event, push, or
+  PR trigger and none is planned — if the user asks for one, propose a cron
+  automation that polls instead (`gh pr list`, `git fetch`, …).
 
 ## Choosing the schedule
 

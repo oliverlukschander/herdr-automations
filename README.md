@@ -22,7 +22,9 @@ automations:
 If you have used ChatGPT's Scheduled tasks, this is the same boundary — a prompt, a
 schedule, a model, and a choice between an isolated worktree and the repo itself —
 except it runs in your terminal, on your machine, against your repos, and the config
-is one YAML file you can keep in git.
+is one YAML file you can keep in git. Unlike agent schedulers that ship an account
+and a webhook relay (Open Run, for one), nothing leaves the machine and nothing
+installs outside the plugin.
 
 Every weekday at 9:00, a Claude (or Codex, or opencode…) agent spawns in a fresh
 worktree of `myapp`, gets that prompt, and works until it's done. You arrive to
@@ -50,6 +52,7 @@ a Friday digest — deserve better than you retyping the same prompt every morni
 - **Self-updating daemon** — it re-executes itself when the plugin binary changes, and a PID lock keeps a second scheduler from double-firing everything
 - **Live board** — an overlay pane inside Herdr: next run, last status, `r` to run now, `enter` to jump straight into the workspace a run created
 - **Agents can self-schedule** — a bundled [skill](skills/creating-automations/SKILL.md) teaches Claude Code the format: say *"triage my errors every morning"* and the agent writes the entry itself
+- **A failure finds you** — a run that fails, a run that's missed, or a broken entry raises a Herdr toast; everything else stays quiet
 
 ## What it isn't
 
@@ -184,6 +187,7 @@ agent's own posture is Herdr's to describe.
 - **Writes to two places** — the plugin config dir (`herdr plugin config-dir dnzzl.automations`) and `~/.local/state/herdr/plugins/dnzzl.automations` for the run log. Nothing else on disk is touched by the plugin itself
 - **Creates git worktrees and branches** in the repos you name, `auto/<name>-<timestamp>`. It never removes one on its own — `herdr-automations cleanup` is the only thing that deletes, it asks first, and it only touches `auto/` branches already contained in your default branch
 - **Opens no ports**, phones nothing home, and downloads nothing at runtime — the only network access is `herdr plugin install` fetching a checksum-verified release binary
+- **Raises a Herdr toast** on a failed run, a missed run, or a broken `automations.yaml` entry — in-session only: a panel inside the Herdr window, not an OS notification, and not sent anywhere
 - **`herdr plugin uninstall`** removes the plugin and leaves your config and history where they are
 
 ## FAQ
@@ -225,7 +229,16 @@ schedule it with `workflow: <name>` instead of `prompt:`. The run waits for the
 workflow and fails when it does, and it refuses to start at all when `hwf` isn't
 installed.
 
-**Event triggers (on push, on PR, on `worktree.created`)?** Planned — Herdr's plugin manifest already supports `[[events]]`; cron came first because it's 90% of the value.
+**Event triggers? On push, on PR?** No, and not planned. Herdr's plugin manifest does
+support `[[events]]`, but the events are workspace lifecycle — a worktree opened, a
+pane exited, a tab renamed. There is no git event, no push, no pull request, and no
+webhook endpoint. Turning a GitHub push into a local run means something hosted in
+the middle holding your repo names and listening for the hook, which is the opposite
+of the two paragraphs above. If you want work to happen on push, your forge's CI is
+already there. If you want it locally, a cron automation that polls and does nothing
+when there is nothing new (`gh pr list`, `git fetch`) is one entry in this file.
+
+An automation is one prompt on a clock. That is the whole boundary.
 
 ## Development
 
@@ -234,7 +247,7 @@ go build -o bin/herdr-automations . && go test ./...
 herdr plugin link .        # use your checkout as the installed plugin
 ```
 
-PRs welcome — especially new event triggers, run cleanup policies, and agent kinds tested in the wild.
+PRs welcome — especially agent kinds tested in the wild, cleanup policies, and notification shapes.
 
 ## License
 

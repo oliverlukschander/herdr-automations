@@ -11,9 +11,10 @@ fits before you write it.
 - **Agent kinds tested in the wild.** The plugin claims to work with anything
   `herdr agent start` supports; only `claude` is exercised daily. Reports of what
   breaks on `codex`, `opencode`, `gemini` or `cursor` are worth more than code.
-- **Event triggers.** Herdr's plugin manifest supports `[[events]]`; cron came
-  first because it covers most of the value.
 - **Run cleanup policies** — which worktrees are demonstrably safe to remove.
+- **Notification shapes.** A failed run, a missed run, or a broken entry toasts
+  through `herdr notification show`; better wording or grouping is welcome. Event
+  triggers are not — see the README's Event triggers FAQ entry for why.
 
 ## Working on it
 
