@@ -12,9 +12,22 @@ import (
 	"time"
 
 	"github.com/DnzzL/herdr-automations/internal/config"
+	"github.com/DnzzL/herdr-automations/internal/herdr"
 	"github.com/DnzzL/herdr-automations/internal/history"
 	"github.com/DnzzL/herdr-automations/internal/host"
+	"github.com/DnzzL/herdr-automations/internal/notify"
 )
+
+// fakeSink is notify's test seam (internal/notify/notify_test.go), reused here
+// to assert the runner drives it rather than filtering statuses itself.
+type fakeSink struct {
+	titles []string
+}
+
+func (f *fakeSink) NotificationShow(title, body string, sound herdr.Sound) error {
+	f.titles = append(f.titles, title)
+	return nil
+}
 
 // fakeHost stands in for the machine. A nil field means the step works.
 type fakeHost struct {
@@ -239,6 +252,48 @@ func TestBusyIsFalseOnceARunFinishes(t *testing.T) {
 	_ = r.Run(automation(), "cron")
 	if r.Busy() {
 		t.Error("Busy() = true after the run failed: the slot leaked")
+	}
+}
+
+func TestRunToastsAFailureAndNothingBefore(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	h := &fakeHost{do: func(host.Session, config.Automation, time.Duration) error {
+		return errors.New("boom")
+	}}
+	sink := &fakeSink{}
+	r := NewWith(h, notify.With(sink))
+
+	_ = r.Run(automation(), "cron")
+
+	if len(sink.titles) != 1 {
+		t.Fatalf("toasts = %v, want exactly one despite scheduled/running also being recorded", sink.titles)
+	}
+	if sink.titles[0] != "triage failed" {
+		t.Errorf("title = %q", sink.titles[0])
+	}
+}
+
+func TestRunNotifiesTheNotifierOfEveryStatusItRecords(t *testing.T) {
+	// Deciding what deserves a toast is notify's job; a runner that pre-filters
+	// puts the policy in two places.
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	sink := &fakeSink{}
+	r := NewWith(&fakeHost{}, notify.With(sink))
+
+	if err := r.Run(automation(), "cron"); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.titles) != 0 {
+		t.Fatalf("toasts = %v, want none for a run that succeeded", sink.titles)
+	}
+}
+
+func TestRunWithoutANotifierStillRuns(t *testing.T) {
+	// The board and the CLI build a Runner with New/Default, which carries no
+	// notifier — a nil one must not panic.
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	if err := New(&fakeHost{}).Run(automation(), "cron"); err != nil {
+		t.Fatal(err)
 	}
 }
 

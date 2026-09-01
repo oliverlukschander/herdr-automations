@@ -16,6 +16,8 @@ import (
 
 	"github.com/DnzzL/herdr-automations/internal/config"
 	"github.com/DnzzL/herdr-automations/internal/history"
+	"github.com/DnzzL/herdr-automations/internal/host"
+	"github.com/DnzzL/herdr-automations/internal/notify"
 	"github.com/DnzzL/herdr-automations/internal/runner"
 	"github.com/DnzzL/herdr-automations/internal/schedule"
 )
@@ -36,14 +38,15 @@ func Run() error {
 	log.Printf("daemon starting, config=%s", config.Path())
 	state := loadState()
 	binary := binaryStamp()
-	runs := runner.Default()
+	n := notify.New()
+	runs := runner.NewWith(host.New(), n)
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	tick := time.NewTicker(tickInterval)
 	defer tick.Stop()
 
-	evaluate(state, runs) // don't wait a full tick to notice what is already due
+	evaluate(state, runs, n) // don't wait a full tick to notice what is already due
 
 	for {
 		select {
@@ -51,7 +54,7 @@ func Run() error {
 			if stamp := binaryStamp(); stamp != binary && stamp != "" {
 				restart(release, runs)
 			}
-			evaluate(state, runs)
+			evaluate(state, runs, n)
 		case s := <-sigs:
 			log.Printf("received %v, shutting down", s)
 			return nil
@@ -60,24 +63,26 @@ func Run() error {
 }
 
 // evaluate asks the schedule what should happen now, and does it.
-func evaluate(state *scheduleState, runs *runner.Runner) {
+func evaluate(state *scheduleState, runs *runner.Runner, n *notify.Notifier) {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Printf("config error, leaving the schedule untouched: %v", err)
 		return
 	}
-	dirty := reportInvalid(cfg, state)
+	dirty, invalid := reportInvalid(cfg, state)
 
 	res := schedule.Plan(cfg, schedule.State{LastOccurrence: state.LastOccurrence}, time.Now())
 	state.LastOccurrence = res.State.LastOccurrence
 	dirty = dirty || res.Changed
 
+	var missed []string
 	for _, d := range res.Decisions {
 		switch d.Kind {
 		case schedule.Register:
 			log.Printf("%s: scheduled, next run %s", d.Automation.Name, d.At.Format(time.RFC1123))
 		case schedule.Missed:
 			recordMissed(d.Automation.Name, d.Count, d.Reason)
+			missed = append(missed, d.Automation.Name)
 			log.Printf("%s: missed (%s)", d.Automation.Name, d.Reason)
 		case schedule.Fire:
 			if d.Trigger == history.TriggerCatchup {
@@ -91,6 +96,7 @@ func evaluate(state *scheduleState, runs *runner.Runner) {
 			}(d.Automation, d.Trigger)
 		}
 	}
+	n.Tick(missed, invalid)
 
 	if dirty {
 		if err := state.save(); err != nil {
@@ -99,16 +105,16 @@ func evaluate(state *scheduleState, runs *runner.Runner) {
 	}
 }
 
-// reportInvalid records each broken entry once. evaluate runs every 30s, so
-// re-recording an unfixed typo would bury the log and the board under the same
-// line all day; going quiet about it entirely is how a "missing" automation
-// stays a mystery.
-func reportInvalid(cfg *config.Config, state *scheduleState) bool {
+// reportInvalid records each broken entry once, and returns the automations
+// newly reported this tick so evaluate can fold them into one Tick toast.
+// Re-recording an unfixed typo every 30s would bury the log and the board
+// under the same line all day; going quiet about it entirely is how a
+// "missing" automation stays a mystery.
+func reportInvalid(cfg *config.Config, state *scheduleState) (changed bool, newlyInvalid []string) {
 	if state.Invalid == nil {
 		state.Invalid = map[string]bool{}
 	}
 	seen := map[string]bool{}
-	changed := false
 	for _, d := range cfg.Invalid {
 		line := d.String()
 		seen[line] = true
@@ -122,6 +128,7 @@ func reportInvalid(cfg *config.Config, state *scheduleState) bool {
 		if name == "" {
 			name = "(unnamed)"
 		}
+		newlyInvalid = append(newlyInvalid, name)
 		err := history.Append(history.Record{
 			RunID:      history.NewID(name, "invalid"),
 			Automation: name, Status: history.StatusInvalid,
@@ -138,7 +145,7 @@ func reportInvalid(cfg *config.Config, state *scheduleState) bool {
 			changed = true
 		}
 	}
-	return changed
+	return changed, newlyInvalid
 }
 
 func recordMissed(name string, count int, why string) {

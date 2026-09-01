@@ -1,11 +1,24 @@
 package daemon
 
 import (
+	"os"
 	"testing"
 
 	"github.com/DnzzL/herdr-automations/internal/config"
+	"github.com/DnzzL/herdr-automations/internal/herdr"
 	"github.com/DnzzL/herdr-automations/internal/history"
+	"github.com/DnzzL/herdr-automations/internal/notify"
+	"github.com/DnzzL/herdr-automations/internal/runner"
 )
+
+type fakeSink struct {
+	toasts int
+}
+
+func (f *fakeSink) NotificationShow(title, body string, sound herdr.Sound) error {
+	f.toasts++
+	return nil
+}
 
 func invalidRecords(t *testing.T) int {
 	t.Helper()
@@ -31,10 +44,10 @@ func TestReportInvalidComplainsOncePerBrokenEntry(t *testing.T) {
 	}}
 	state := &scheduleState{Invalid: map[string]bool{}}
 
-	if !reportInvalid(cfg, state) {
+	if changed, _ := reportInvalid(cfg, state); !changed {
 		t.Error("the first sighting is a change worth persisting")
 	}
-	if reportInvalid(cfg, state) {
+	if changed, _ := reportInvalid(cfg, state); changed {
 		t.Error("the second tick has nothing new to say")
 	}
 	if got := invalidRecords(t); got != 1 {
@@ -51,7 +64,7 @@ func TestReportInvalidSpeaksUpAgainAfterAFixAndABreak(t *testing.T) {
 	state := &scheduleState{Invalid: map[string]bool{}}
 
 	reportInvalid(broken, state)
-	if !reportInvalid(fixed, state) {
+	if changed, _ := reportInvalid(fixed, state); !changed {
 		t.Error("forgetting a fixed entry is a change worth persisting")
 	}
 	if len(state.Invalid) != 0 {
@@ -75,5 +88,62 @@ func TestReportInvalidNamesAnEntryTooBrokenToHaveAName(t *testing.T) {
 	}
 	if len(runs) != 1 || runs[0].Automation != "(unnamed)" {
 		t.Fatalf("records = %+v, want one attributed to (unnamed)", runs)
+	}
+}
+
+func TestATickWithThreeBrokenEntriesToastsOnce(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", dir)
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", dir)
+
+	yaml := `automations:
+  - name: a
+    cron: "not a cron"
+    repo: /repo
+    prompt: go
+  - name: b
+    cron: "not a cron either"
+    repo: /repo
+    prompt: go
+  - name: c
+    cron: "still not a cron"
+    repo: /repo
+    prompt: go
+`
+	if err := os.WriteFile(dir+"/automations.yaml", []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sink := &fakeSink{}
+	state := &scheduleState{Invalid: map[string]bool{}}
+	evaluate(state, runner.New(nil), notify.With(sink))
+
+	if sink.toasts != 1 {
+		t.Fatalf("toasts = %d, want exactly one for the whole tick, regardless of file size", sink.toasts)
+	}
+}
+
+func TestReportInvalidToastsOncePerBrokenEntryAcrossTicks(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", dir)
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", dir)
+
+	yaml := `automations:
+  - name: a
+    cron: "not a cron"
+    repo: /repo
+    prompt: go
+`
+	if err := os.WriteFile(dir+"/automations.yaml", []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sink := &fakeSink{}
+	state := &scheduleState{Invalid: map[string]bool{}}
+	evaluate(state, runner.New(nil), notify.With(sink))
+	evaluate(state, runner.New(nil), notify.With(sink))
+
+	if sink.toasts != 1 {
+		t.Fatalf("toasts = %d, want the second tick to stay quiet about the same unfixed entry", sink.toasts)
 	}
 }
