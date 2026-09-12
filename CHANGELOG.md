@@ -2,6 +2,13 @@
 
 What changed for someone using the plugin. Dates are release dates.
 
+## Unreleased
+
+- `workspace: existing` with `workspace_id` opens each run in a fresh tab inside
+  one existing workspace. Several automations can share a space without creating
+  a new workspace or Git worktree per run. Completed tabs can stay open without
+  their agent names blocking later runs.
+
 ## v0.7.0 — 2026-09-01
 
 - A run that fails, a run that's missed, or a broken `automations.yaml` entry

@@ -258,3 +258,47 @@ func TestSaveRefusesToDropTheEntriesThatDidNotLoad(t *testing.T) {
 		t.Fatal("the broken entry was deleted from the file")
 	}
 }
+
+func TestExistingWorkspaceValidation(t *testing.T) {
+	a := Automation{Name: "inbox", Cron: "@hourly", Repo: "/repo", Prompt: "check", Workspace: WorkspaceExisting}
+	if err := a.validate(); err == nil {
+		t.Fatal("missing workspace_id accepted")
+	}
+	a.WorkspaceID = "w7"
+	if err := a.validate(); err != nil {
+		t.Fatal(err)
+	}
+	a.Workspace = WorkspaceRoot
+	if err := a.validate(); err == nil {
+		t.Fatal("ignored workspace_id accepted")
+	}
+}
+
+func TestExistingWorkspaceSurvivesConfigRoundTrip(t *testing.T) {
+	withConfig(t, `automations:
+  - name: daily-summary
+    cron: "@daily"
+    repo: /repo
+    workspace: existing
+    workspace_id: w7
+    prompt: Summarize recent changes.
+`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Invalid) != 0 || len(cfg.Automations) != 1 {
+		t.Fatalf("config=%+v", cfg)
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := cfg.Find("daily-summary")
+	if a == nil || a.Workspace != WorkspaceExisting || a.WorkspaceID != "w7" {
+		t.Fatalf("existing workspace was lost on save: %+v", a)
+	}
+}

@@ -148,6 +148,19 @@ func (Client) WorkspaceCreate(cwd, label string) (workspaceID, paneID string, er
 	return res.ids("workspace create")
 }
 
+// TabCreate gives a run its own shell without creating a workspace.
+func (Client) TabCreate(workspaceID, cwd, label string) (string, error) {
+	var res createResult
+	if err := run(&res, "tab", "create", "--workspace", workspaceID,
+		"--cwd", cwd, "--label", label, "--no-focus"); err != nil {
+		return "", err
+	}
+	if res.RootPane.PaneID == "" {
+		return "", fmt.Errorf("tab create returned no pane id")
+	}
+	return res.RootPane.PaneID, nil
+}
+
 // Worktree is one checkout backing a workspace. OpenWorkspaceID is empty once
 // the workspace has been closed, which is the only durable signal Herdr keeps
 // about whether anyone came back to look at a run.

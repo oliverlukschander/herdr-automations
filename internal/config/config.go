@@ -33,6 +33,7 @@ type Workspace string
 
 const (
 	WorkspaceWorktree Workspace = "worktree" // fresh git worktree per run
+	WorkspaceExisting Workspace = "existing" // fresh tab in an existing workspace
 	WorkspaceRoot     Workspace = "root"     // workspace on the repo root
 )
 
@@ -45,6 +46,8 @@ type Automation struct {
 	Repo string `yaml:"repo"`
 	// Workspace provisioning mode; defaults to worktree.
 	Workspace Workspace `yaml:"workspace,omitempty"`
+	// WorkspaceID is required for existing mode. Each run gets a fresh tab at Repo.
+	WorkspaceID string `yaml:"workspace_id,omitempty"`
 	// Agent kind as understood by `herdr agent start --kind`; defaults to claude.
 	Agent string `yaml:"agent,omitempty"`
 	// Model handed to the agent executable as --model. Empty leaves the agent
@@ -142,8 +145,14 @@ func (a *Automation) validate() error {
 	if (a.Prompt == "") == (a.Workflow == "") {
 		return fmt.Errorf("%s: exactly one of prompt or workflow is required", a.Name)
 	}
-	if a.Workspace != WorkspaceWorktree && a.Workspace != WorkspaceRoot {
-		return fmt.Errorf("%s: workspace must be worktree or root, got %q", a.Name, a.Workspace)
+	if a.Workspace != WorkspaceWorktree && a.Workspace != WorkspaceRoot && a.Workspace != WorkspaceExisting {
+		return fmt.Errorf("%s: workspace must be worktree, root or existing, got %q", a.Name, a.Workspace)
+	}
+	if a.Workspace == WorkspaceExisting && strings.TrimSpace(a.WorkspaceID) == "" {
+		return fmt.Errorf("%s: workspace_id is required for existing mode", a.Name)
+	}
+	if a.Workspace != WorkspaceExisting && a.WorkspaceID != "" {
+		return fmt.Errorf("%s: workspace_id requires existing mode", a.Name)
 	}
 	if a.Model != "" && !KindAcceptsModel(a.Agent) {
 		return fmt.Errorf("%s: agent %q takes no --model; put the flag it does take in agent_args", a.Name, a.Agent)

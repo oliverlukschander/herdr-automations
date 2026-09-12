@@ -2,6 +2,8 @@ package host
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 // fakeOps scripts Herdr's answers. A nil field means "this call is fine and
 // says nothing", which keeps each test to the calls it actually cares about.
 type fakeOps struct {
+	tabCreate       func(workspaceID, cwd, label string) (string, error)
 	worktreeCreate  func(repo, branch, label string) (string, string, error)
 	workspaceCreate func(cwd, label string) (string, string, error)
 	agentStart      func(name, kind, paneID string, args []string) error
@@ -42,6 +45,13 @@ func (f *fakeOps) WorkspaceCreate(cwd, label string) (string, string, error) {
 		return "w2", "w2:p1", nil
 	}
 	return f.workspaceCreate(cwd, label)
+}
+
+func (f *fakeOps) TabCreate(workspaceID, cwd, label string) (string, error) {
+	if f.tabCreate == nil {
+		return workspaceID + ":p1", nil
+	}
+	return f.tabCreate(workspaceID, cwd, label)
 }
 
 func (f *fakeOps) AgentStart(name, kind, paneID string, args []string) error {
@@ -233,5 +243,60 @@ func TestAgentNameFitsHerdrsLimit(t *testing.T) {
 	}
 	if got[len(got)-1] == '-' {
 		t.Errorf("agentName(%q) = %q, want no trailing dash", long, got)
+	}
+}
+
+func TestProvisionExistingUsesFreshTabsInTheSameWorkspace(t *testing.T) {
+	calls := 0
+	ops := &fakeOps{
+		workspaceCreate: func(string, string) (string, string, error) {
+			t.Fatal("created a workspace")
+			return "", "", nil
+		},
+		worktreeCreate: func(string, string, string) (string, string, error) {
+			t.Fatal("created a worktree")
+			return "", "", nil
+		},
+		tabCreate: func(workspaceID, cwd, label string) (string, error) {
+			if workspaceID != "w7" || cwd != "/repo" || !strings.HasPrefix(label, "auto: inbox ") {
+				t.Fatalf("unexpected tab: %q %q %q", workspaceID, cwd, label)
+			}
+			calls++
+			return fmt.Sprintf("w7:p%d", calls), nil
+		},
+	}
+	h := &live{ops: ops, knobs: fast()}
+	a := config.Automation{Name: "inbox", Repo: "/repo", Workspace: config.WorkspaceExisting, WorkspaceID: "w7"}
+	first, err := h.Provision(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := h.Provision(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.WorkspaceID != second.WorkspaceID || first.PaneID == second.PaneID || calls != 2 {
+		t.Fatalf("runs must share a workspace with distinct panes: %+v %+v", first, second)
+	}
+	ops.tabCreate = func(string, string, string) (string, error) { return "", errors.New("workspace gone") }
+	if _, err := h.Provision(a); err == nil {
+		t.Fatal("missing workspace must fail, never create a replacement")
+	}
+}
+
+func TestExistingRunsHaveDistinctLiveAgentNames(t *testing.T) {
+	seen := map[string]bool{}
+	ops := &fakeOps{agentStart: func(name, kind, paneID string, args []string) error {
+		if seen[name] || len(name) > 32 {
+			t.Fatalf("invalid or reused name %q", name)
+		}
+		seen[name] = true
+		return nil
+	}}
+	w := agentWork{ops: ops, knobs: fast(), a: config.Automation{Name: strings.Repeat("long-name", 8), Workspace: config.WorkspaceExisting}}
+	for _, pane := range []string{"w7:p1", "w7:p2"} {
+		if err := w.start(Session{PaneID: pane}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

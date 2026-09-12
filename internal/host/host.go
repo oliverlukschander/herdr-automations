@@ -92,6 +92,9 @@ func (h *live) Provision(a config.Automation) (Session, error) {
 	case config.WorkspaceWorktree:
 		branch := fmt.Sprintf("auto/%s-%s", slug(a.Name), time.Now().Format("20060102-1504"))
 		workspaceID, paneID, err = h.ops.WorktreeCreate(a.Repo, branch, label)
+	case config.WorkspaceExisting:
+		workspaceID = a.WorkspaceID
+		paneID, err = h.ops.TabCreate(workspaceID, a.Repo, label+" "+time.Now().Format("2006-01-02 15:04"))
 	case config.WorkspaceRoot:
 		workspaceID, paneID, err = h.ops.WorkspaceCreate(a.Repo, label)
 	default:

@@ -166,7 +166,7 @@ automations:
   - name: issue-triage            # unique, kebab-case
     cron: "0 9 * * 1-5"           # 5-field crontab, or @daily / @hourly / @weekly
     repo: ~/Projects/myapp
-    workspace: worktree           # worktree (default) | root
+    workspace: worktree           # worktree (default) | root | existing
     agent: claude                 # any `herdr agent start --kind`
     model: sonnet                 # optional → --model; kinds without the flag are caught on load
     prompt: "…"                   # OR workflow: <name>  (delegates to hwf run)
@@ -177,10 +177,38 @@ automations:
     disabled: true                # optional: keep it, don't schedule it
 ```
 
+
+### Run in a shared workspace
+
+Create a workspace once with `herdr workspace create --label Automations --no-focus`,
+or find an existing one with `herdr workspace list`. Use its returned ID:
+
+```yaml
+automations:
+  - name: daily-summary
+    cron: "@daily"
+    repo: ~/Projects/myapp
+    workspace: existing
+    workspace_id: w7              # replace with your workspace's ID
+    agent: claude
+    prompt: "Summarize recent changes."
+```
+
+Point several automations at the same `workspace_id` to collect their runs in one
+space. Each run opens a fresh tab labeled with its automation name and timestamp,
+uses `repo` as its working directory, and leaves your focus unchanged. Earlier tabs
+remain open for review; each run gets a distinct agent name.
+
+Like `root`, this mode works directly in `repo` and creates no Git worktree. Runs
+sharing a directory can see each other's file changes. `workspace_id` is required
+only for `existing` mode and belongs to the Herdr session running the daemon. If
+you close that workspace, runs fail until you update the ID; the plugin does not
+create a replacement. The `add` wizard also offers this mode.
+
 ## What this does to your machine
 
 `herdr-automations` schedules and records. It never runs your prompt itself: it asks
-Herdr to create a workspace and start an agent, and that agent runs under whatever
+Herdr to provision a workspace or tab and start an agent, and that agent runs under whatever
 permissions Herdr gives it. So the honest statement is about the scheduler, and the
 agent's own posture is Herdr's to describe.
 

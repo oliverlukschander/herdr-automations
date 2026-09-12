@@ -2,6 +2,10 @@ package herdr
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -66,5 +70,42 @@ func TestNotificationArgsPassesTheTitleAsAPositionalArgument(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("args = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestTabCreate(t *testing.T) {
+	for _, tc := range []struct {
+		name, response, pane string
+		wantError            bool
+	}{
+		{"created", `{"result":{"type":"tab_created","root_pane":{"pane_id":"w7:p2"}}}`, "w7:p2", false},
+		{"missing pane", `{"result":{"type":"tab_created"}}`, "", true},
+		{"invalid response", `not json`, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			bin := filepath.Join(dir, "herdr")
+			argsFile := filepath.Join(dir, "args")
+			script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HERDR_TEST_ARGS\"\nprintf '%s\\n' \"$HERDR_TEST_RESPONSE\"\n"
+			if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("HERDR_BIN_PATH", bin)
+			t.Setenv("HERDR_TEST_ARGS", argsFile)
+			t.Setenv("HERDR_TEST_RESPONSE", tc.response)
+			pane, err := (Client{}).TabCreate("w7", "/a repo", "auto: daily summary")
+			if (err != nil) != tc.wantError || pane != tc.pane {
+				t.Fatalf("pane=%q err=%v", pane, err)
+			}
+			raw, err := os.ReadFile(argsFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+			want := []string{"tab", "create", "--workspace", "w7", "--cwd", "/a repo", "--label", "auto: daily summary", "--no-focus"}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("args=%q, want %q", got, want)
+			}
+		})
 	}
 }

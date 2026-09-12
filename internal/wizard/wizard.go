@@ -67,7 +67,14 @@ func Run() error {
 
 	cwd, _ := os.Getwd()
 	repo := ask(in, "Repo path", cwd)
-	workspace := ask(in, "Workspace [worktree|root]", "worktree")
+	workspace := ask(in, "Workspace [worktree|root|existing]", "worktree")
+	workspaceID := ""
+	if config.Workspace(workspace) == config.WorkspaceExisting {
+		workspaceID = ask(in, "Workspace ID (from herdr workspace list)", "")
+		if workspaceID == "" {
+			return fmt.Errorf("a workspace ID is required for existing mode")
+		}
+	}
 	agent := ask(in, "Agent kind", "claude")
 	// Asked every time rather than defaulted in the file: an automation that
 	// does not say which model it uses is one that quietly picks whatever the
@@ -97,7 +104,8 @@ func Run() error {
 
 	cfg.Automations = append(cfg.Automations, config.Automation{
 		Name: name, Cron: cronExpr, Repo: repo,
-		Workspace: config.Workspace(workspace), Agent: agent, Model: model,
+		Workspace: config.Workspace(workspace), WorkspaceID: workspaceID,
+		Agent: agent, Model: model,
 		Prompt: prompt, Workflow: workflow,
 		MCPConfig: mcp, TimeoutMinutes: timeout,
 	})
