@@ -8,6 +8,8 @@ What changed for someone using the plugin. Dates are release dates.
   one existing workspace. Several automations can share a space without creating
   a new workspace or Git worktree per run. Completed tabs can stay open without
   their agent names blocking later runs.
+- `model:` on a `pi` automation no longer fails to load. Pi takes `--model`, and
+  its pattern accepts `provider/id`, so `model: xai/grok-4.6` pins the route too.
 
 ## v0.7.0 — 2026-09-01
 

@@ -181,6 +181,7 @@ var modelFlagKinds = map[string]bool{
 	"droid":    true,
 	"copilot":  true,
 	"hermes":   true,
+	"pi":       true,
 }
 
 // KindAcceptsModel reports whether this agent kind understands `--model`.
