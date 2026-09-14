@@ -145,6 +145,36 @@ func slug(name string) string {
 	return out
 }
 
+// agentNameFor is the name this run's agent gets. Normally the automation's,
+// which is what you want to read in Herdr's sidebar: one automation, one agent
+// name, and the previous run's is free because its workspace was closed.
+//
+// In existing mode it is not free — earlier runs stay open in their own tabs on
+// purpose, so their names are still live and a repeat would be refused. The
+// pane ID goes in front to tell them apart, and in front rather than behind so
+// the 32-character trim can only eat the automation name.
+func agentNameFor(a config.Automation, paneID string) string {
+	if a.Workspace != config.WorkspaceExisting {
+		return agentName(a.Name)
+	}
+	return agentName(caseMarked(paneID) + "-" + a.Name)
+}
+
+// caseMarked prefixes each uppercase rune with an underscore, so that the
+// lowercasing in slug stays injective. Herdr's pane IDs are case-sensitive and
+// mixed case in practice (w1D:p1, w17:pB) while agent names are lowercase only,
+// so folding them directly would let two live tabs land on one name.
+func caseMarked(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r >= 'A' && r <= 'Z' {
+			b.WriteByte('_')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // agentName fits an automation name into Herdr's agent-name rules: lowercase,
 // [a-z0-9-_], at most 32 characters.
 func agentName(name string) string {

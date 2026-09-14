@@ -294,9 +294,22 @@ func TestExistingRunsHaveDistinctLiveAgentNames(t *testing.T) {
 		return nil
 	}}
 	w := agentWork{ops: ops, knobs: fast(), a: config.Automation{Name: strings.Repeat("long-name", 8), Workspace: config.WorkspaceExisting}}
-	for _, pane := range []string{"w7:p1", "w7:p2"} {
+	// Herdr's pane IDs are case-sensitive; agent names are lowercase only. w1D
+	// and w1d are two different live tabs and must not fold onto one name.
+	for _, pane := range []string{"w7:p1", "w7:p2", "w1D:p1", "w1d:p1", "w17:pB", "w17:pb"} {
 		if err := w.start(Session{PaneID: pane}); err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+func TestAgentNameIsTheAutomationsOutsideExistingMode(t *testing.T) {
+	// The pane ID only earns its place where earlier runs stay open. Elsewhere
+	// the sidebar should keep reading "inbox", not "w7-p1-inbox".
+	for _, mode := range []config.Workspace{config.WorkspaceWorktree, config.WorkspaceRoot} {
+		a := config.Automation{Name: "inbox", Workspace: mode}
+		if got := agentNameFor(a, "w7:p1"); got != "inbox" {
+			t.Errorf("agentNameFor(%s) = %q, want %q", mode, got, "inbox")
 		}
 	}
 }

@@ -27,7 +27,8 @@ automations:
   - name: issue-triage            # unique
     cron: "0 9 * * 1-5"           # 5-field crontab, or @daily / @hourly / @weekly
     repo: ~/Projects/myapp        # repo the agent works in
-    workspace: worktree           # worktree (default, fresh branch per run) | root
+    workspace: worktree           # worktree (default, fresh branch per run) | root | existing
+    # workspace_id: w7           # required by, and only by, workspace: existing
     agent: claude                 # any kind `herdr agent start` supports
     model: sonnet                 # optional → passed as --model
     prompt: |
@@ -70,6 +71,12 @@ Exactly one of `prompt` / `workflow` is required.
   (default 120), otherwise they appear as `missed` in the history.
 - `workspace: worktree` means the agent never touches the user's working copy.
   Only choose `root` when the task must see uncommitted local state.
+- `workspace: existing` puts each run in a fresh tab of one workspace the user
+  already created, instead of a new workspace per run. It needs a `workspace_id`
+  from `herdr workspace list`, and like `root` it works directly in `repo` with
+  no worktree. Propose it for a frequent schedule — hourly and up — where a
+  workspace per run would bury the sidebar. Never invent the ID: if the user has
+  not given one, ask, or write the entry with `worktree`.
 - A failed run, a missed run, or a broken entry raises a Herdr toast; a
   successful or skipped run stays quiet on purpose. There is no event, push, or
   PR trigger and none is planned — if the user asks for one, propose a cron
