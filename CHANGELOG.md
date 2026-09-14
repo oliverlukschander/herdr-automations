@@ -2,6 +2,11 @@
 
 What changed for someone using the plugin. Dates are release dates.
 
+## Unreleased
+
+- `model:` on a `pi` automation no longer fails to load. Pi takes `--model`, and
+  its pattern accepts `provider/id`, so `model: xai/grok-4.6` pins the route too.
+
 ## v0.7.0 — 2026-09-01
 
 - A run that fails, a run that's missed, or a broken `automations.yaml` entry
