@@ -40,8 +40,11 @@ const (
 // Automation is one scheduled entry: a prompt (or delegated workflow) fired
 // on a cron schedule against an agent in a provisioned workspace.
 type Automation struct {
-	Name string `yaml:"name"`
-	Cron string `yaml:"cron"`
+	// CloseWhenNoAction requires a completion report and closes only this run's tab.
+	CloseWhenNoAction bool   `yaml:"close_when_no_action,omitempty"`
+	ReportPath        string `yaml:"-"`
+	Name              string `yaml:"name"`
+	Cron              string `yaml:"cron"`
 	// Repo the automation operates on (absolute path, ~ expanded).
 	Repo string `yaml:"repo"`
 	// Workspace provisioning mode; defaults to worktree.
@@ -130,6 +133,9 @@ func (a Automation) CatchUp() time.Duration {
 }
 
 func (a *Automation) validate() error {
+	if a.CloseWhenNoAction && a.Workspace != WorkspaceExisting {
+		return fmt.Errorf("%s: close_when_no_action requires workspace: existing", a.Name)
+	}
 	if a.Name == "" {
 		return fmt.Errorf("automation without a name")
 	}

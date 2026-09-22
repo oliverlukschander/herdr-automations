@@ -31,6 +31,8 @@ func (f *fakeSink) NotificationShow(title, body string, sound herdr.Sound) error
 
 // fakeHost stands in for the machine. A nil field means the step works.
 type fakeHost struct {
+	closeTab  func(host.Session, config.Automation) error
+	closed    int
 	provision func(config.Automation) (host.Session, error)
 	do        func(host.Session, config.Automation, time.Duration) error
 
@@ -305,4 +307,12 @@ func TestStatusForSeparatesACancellationFromAFailure(t *testing.T) {
 	if got := statusFor(errors.New("start claude agent: boom")); got != history.StatusFailed {
 		t.Errorf("a real failure recorded as %q, want failed", got)
 	}
+}
+
+func (f *fakeHost) CloseTab(s host.Session, a config.Automation) error {
+	f.closed++
+	if f.closeTab != nil {
+		return f.closeTab(s, a)
+	}
+	return nil
 }

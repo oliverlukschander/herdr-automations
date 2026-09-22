@@ -95,8 +95,10 @@ func newAPIError(args []string, stdout []byte, stderr string, runErr error) erro
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if json.Unmarshal(stdout, &envelope) == nil && envelope.Error.Code != "" {
-		return &APIError{Command: cmd, Code: envelope.Error.Code, Message: envelope.Error.Message}
+	for _, data := range [][]byte{stdout, []byte(stderr)} {
+		if json.Unmarshal(data, &envelope) == nil && envelope.Error.Code != "" {
+			return &APIError{Command: cmd, Code: envelope.Error.Code, Message: envelope.Error.Message}
+		}
 	}
 	msg := strings.TrimSpace(stderr)
 	if msg == "" {
@@ -311,7 +313,12 @@ func (Client) NotificationShow(title, body string, sound Sound) error {
 
 // PaneRun executes a shell command in a pane (used to delegate to hwf).
 func (Client) PaneRun(paneID string, command ...string) error {
-	return run(nil, append([]string{"pane", "run", paneID}, command...)...)
+	// Herdr sends terminal text, so preserve argv boundaries through the shell.
+	quoted := make([]string, len(command))
+	for i, arg := range command {
+		quoted[i] = "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
+	}
+	return run(nil, "pane", "run", paneID, strings.Join(quoted, " "))
 }
 
 // PaneRead returns the pane's recent terminal output. A pane is the only
@@ -327,4 +334,71 @@ func (Client) PaneRead(paneID string, lines int) (string, error) {
 		return "", newAPIError([]string{"pane", "read"}, stdout.Bytes(), stderr.String(), err)
 	}
 	return stdout.String(), nil
+}
+
+// RunTab verifies that the run's pane is still alone in its original tab.
+func (Client) RunTab(paneID, workspaceID, expectedTab string) (string, error) {
+	var res struct {
+		Pane struct {
+			PaneID      string `json:"pane_id"`
+			TabID       string `json:"tab_id"`
+			WorkspaceID string `json:"workspace_id"`
+		} `json:"pane"`
+	}
+	if err := run(&res, "pane", "get", paneID); err != nil {
+		return "", err
+	}
+	p := res.Pane
+	if p.PaneID != paneID || p.WorkspaceID != workspaceID || p.TabID == "" || (expectedTab != "" && p.TabID != expectedTab) {
+		return "", fmt.Errorf("run pane moved or cannot be verified; tab kept open")
+	}
+	var t struct {
+		Tab struct {
+			TabID     string `json:"tab_id"`
+			PaneCount int    `json:"pane_count"`
+		} `json:"tab"`
+	}
+	if err := run(&t, "tab", "get", p.TabID); err != nil {
+		return "", err
+	}
+	if t.Tab.TabID != p.TabID || t.Tab.PaneCount != 1 {
+		return "", fmt.Errorf("run tab is shared or cannot be verified; tab kept open")
+	}
+	return p.TabID, nil
+}
+
+func (Client) TabClose(tabID string) error {
+	if err := run(nil, "tab", "close", tabID); err != nil {
+		return err
+	}
+	// A successful close request is not proof that the tab disappeared.
+	for attempt := 0; attempt < 10; attempt++ {
+		err := run(nil, "tab", "get", tabID)
+		if HasCode(err, "tab_not_found") {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("tab %s remains open after close request", tabID)
+}
+
+// PaneIsShell excludes a new agent, editor, or foreground command after an agent exits.
+func (Client) PaneIsShell(paneID string) bool {
+	var res struct {
+		ProcessInfo struct {
+			PaneID     string `json:"pane_id"`
+			ShellPID   int    `json:"shell_pid"`
+			Foreground []struct {
+				PID int `json:"pid"`
+			} `json:"foreground_processes"`
+		} `json:"process_info"`
+	}
+	if err := run(&res, "pane", "process-info", "--pane", paneID); err != nil {
+		return false
+	}
+	p := res.ProcessInfo
+	return p.PaneID == paneID && p.ShellPID > 0 && len(p.Foreground) == 1 && p.Foreground[0].PID == p.ShellPID
 }

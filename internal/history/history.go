@@ -16,11 +16,12 @@ import (
 type Status string
 
 const (
-	StatusScheduled Status = "scheduled"
-	StatusRunning   Status = "running"
-	StatusDone      Status = "done"
-	StatusFailed    Status = "failed"
-	StatusSkipped   Status = "skipped"
+	StatusScheduled   Status = "scheduled"
+	StatusRunning     Status = "running"
+	StatusDone        Status = "done"
+	StatusNeedsAction Status = "needs_action"
+	StatusFailed      Status = "failed"
+	StatusSkipped     Status = "skipped"
 	// StatusMissed records an occurrence the scheduler could not run at all —
 	// typically the machine was asleep past the catch-up window. Recording it
 	// is the point: a silently absent run is worse than a visible failure.
@@ -59,14 +60,18 @@ func NewID(automation, kind string) string {
 }
 
 type Record struct {
-	RunID       string    `json:"run_id"`
-	Automation  string    `json:"automation"`
-	Status      Status    `json:"status"`
-	At          time.Time `json:"at"`
-	Trigger     Trigger   `json:"trigger,omitempty"`
-	WorkspaceID string    `json:"workspace_id,omitempty"`
-	PaneID      string    `json:"pane_id,omitempty"`
-	Error       string    `json:"error,omitempty"`
+	UserActionRequired *bool     `json:"user_action_required,omitempty"`
+	Summary            string    `json:"summary,omitempty"`
+	ReportPath         string    `json:"report_path,omitempty"`
+	TabClosed          bool      `json:"tab_closed,omitempty"`
+	RunID              string    `json:"run_id"`
+	Automation         string    `json:"automation"`
+	Status             Status    `json:"status"`
+	At                 time.Time `json:"at"`
+	Trigger            Trigger   `json:"trigger,omitempty"`
+	WorkspaceID        string    `json:"workspace_id,omitempty"`
+	PaneID             string    `json:"pane_id,omitempty"`
+	Error              string    `json:"error,omitempty"`
 }
 
 func path() string { return filepath.Join(config.StateDir(), "history.jsonl") }

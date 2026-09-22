@@ -19,11 +19,13 @@ import (
 	"time"
 
 	"github.com/DnzzL/herdr-automations/internal/config"
+	"github.com/DnzzL/herdr-automations/internal/herdr"
 )
 
 // Session is a provisioned place for a run to happen: a workspace and the pane
 // its agent will live in.
 type Session struct {
+	TabID       string
 	WorkspaceID string
 	PaneID      string
 }
@@ -32,6 +34,7 @@ type Session struct {
 type Host interface {
 	Provision(a config.Automation) (Session, error)
 	Do(s Session, a config.Automation, timeout time.Duration) error
+	CloseTab(s Session, a config.Automation) error
 }
 
 // ErrCancelled means the run's workspace was closed while it was working.
@@ -100,7 +103,11 @@ func (h *live) Provision(a config.Automation) (Session, error) {
 	default:
 		err = fmt.Errorf("unknown workspace mode %q", a.Workspace)
 	}
-	return Session{WorkspaceID: workspaceID, PaneID: paneID}, err
+	s := Session{WorkspaceID: workspaceID, PaneID: paneID}
+	if err == nil && a.CloseWhenNoAction {
+		s.TabID, err = h.ops.RunTab(paneID, workspaceID, "")
+	}
+	return s, err
 }
 
 // Do runs the automation's work in the session and reports whether it worked.
@@ -118,7 +125,7 @@ type work interface {
 
 func (h *live) workFor(a config.Automation) work {
 	if a.Workflow != "" {
-		return hwfWork{ops: h.ops, knobs: h.knobs, name: a.Workflow}
+		return hwfWork{ops: h.ops, knobs: h.knobs, name: a.Workflow, reportPath: a.ReportPath}
 	}
 	return agentWork{ops: h.ops, knobs: h.knobs, a: a}
 }
@@ -183,4 +190,28 @@ func agentName(name string) string {
 		s = strings.Trim(s[:32], "-")
 	}
 	return s
+}
+
+// CloseTab refuses to close a working/blocked agent or a moved/shared tab.
+func (h *live) CloseTab(s Session, a config.Automation) error {
+	if a.Workspace != config.WorkspaceExisting || s.TabID == "" {
+		return fmt.Errorf("run has no owned tab")
+	}
+	if a.Workflow == "" {
+		status, err := h.ops.AgentStatus(s.PaneID)
+		if err != nil {
+			if !(h.ops.HasCode(err, herdr.CodeAgentGone) || h.ops.HasCode(err, "agent_not_found")) || !h.ops.PaneIsShell(s.PaneID) {
+				return err
+			}
+			status = "done"
+		}
+		if status != "idle" && status != "done" {
+			return fmt.Errorf("agent is %s; tab kept open", status)
+		}
+	}
+	tab, err := h.ops.RunTab(s.PaneID, s.WorkspaceID, s.TabID)
+	if err != nil {
+		return err
+	}
+	return h.ops.TabClose(tab)
 }
