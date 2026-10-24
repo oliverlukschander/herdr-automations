@@ -283,7 +283,11 @@ func (Client) AgentWait(target string, timeout time.Duration) error {
 // WorkspaceExists reports whether a workspace ID names an open workspace in
 // this Herdr: what an automation in existing mode needs before it can run here.
 func (Client) WorkspaceExists(id string) (bool, error) {
-	err := run(nil, "workspace", "get", id)
+	// Bounded: it is asked from SSH, and an unreachable Herdr must not hang
+	// an apply.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := runCtx(ctx, nil, "workspace", "get", id)
 	if HasCode(err, CodeWorkspaceGone) {
 		return false, nil
 	}

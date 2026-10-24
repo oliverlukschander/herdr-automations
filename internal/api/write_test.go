@@ -191,3 +191,57 @@ func TestADryRunReportsTheFileAsItIs(t *testing.T) {
 		t.Errorf("apply after the dry run: %v", err)
 	}
 }
+
+// Review finding 8: the checks take seconds (shells, hwf, Herdr) and must not
+// hold the file lock while they run: a pause from the board or the app gets
+// through in the meantime.
+func TestChecksRunWithoutTheLock(t *testing.T) {
+	sandbox(t, kept)
+	fakeMachine(t)
+	var paused error = errors.New("never tried")
+	machineChecks.workspace = func(string) (bool, error) {
+		done := make(chan error, 1)
+		go func() { _, _, _, err := config.SetDisabled("other", true, ""); done <- err }()
+		select {
+		case paused = <-done:
+		case <-time.After(3 * time.Second):
+			paused = errors.New("blocked behind the checks")
+		}
+		return true, nil
+	}
+	body := []byte("name: \"[THO] Storno\"\ncron: \"@daily\"\nrepo: " + t.TempDir() + "\nworkspace: existing\nworkspace_id: w9\nworkflow: w\n")
+	if _, err := Apply(body, ApplyOptions{DryRun: true}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if paused != nil {
+		t.Errorf("pause during the checks: %v", paused)
+	}
+}
+
+// ...and a write with --require-runnable writes exactly what was checked: if
+// the file changed while the checks ran, it is a conflict, not a blind write.
+// Review finding 11: such a write reports the checks it ran.
+func TestRequireRunnableWritesWhatWasChecked(t *testing.T) {
+	sandbox(t, kept)
+	fakeMachine(t)
+	dir := t.TempDir()
+	body := []byte("name: new\ncron: \"@daily\"\nrepo: " + dir + "\nworkflow: w\n")
+
+	res, err := Apply(body, ApplyOptions{RequireRunnable: true}, time.Now())
+	if err != nil || res.Runnable == nil || !*res.Runnable || len(res.Checks) == 0 || res.Action != "created" {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+
+	machineChecks.workspace = func(string) (bool, error) { return true, nil }
+	machineChecks.isGit = func(string) bool {
+		config.SetDisabled("other", true, "") // someone else writes meanwhile
+		return true
+	}
+	body = []byte("name: newer\ncron: \"@daily\"\nrepo: " + dir + "\nworkspace: worktree\nprompt: p\n")
+	if _, err := Apply(body, ApplyOptions{RequireRunnable: true}, time.Now()); code(err) != CodeConflict {
+		t.Errorf("write after a change during the checks: %v", err)
+	}
+	if f, _ := config.Read(); f.Item("newer") != nil {
+		t.Error("written anyway")
+	}
+}

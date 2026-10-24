@@ -136,12 +136,11 @@ func Apply(body []byte, o ApplyOptions, now time.Time) (*ApplyResult, error) {
 	}
 
 	res := &ApplyResult{DryRun: o.DryRun, Checks: []Check{}, NextRuns: []Time{}}
-	checking := o.DryRun || o.RequireRunnable
-	before, after, err := config.Change(o.IfMatch, o.DryRun, func(f *config.File) (config.Edit, error) {
-		target := name
-		if o.RenameFrom != "" {
-			target = o.RenameFrom
-		}
+	target := name
+	if o.RenameFrom != "" {
+		target = o.RenameFrom
+	}
+	edit := func(f *config.File) (config.Edit, error) {
 		it := f.Item(target)
 		switch {
 		case o.RenameFrom != "" && it == nil:
@@ -172,26 +171,32 @@ func Apply(body []byte, o ApplyOptions, now time.Time) (*ApplyResult, error) {
 		if err == nil && bytes.Equal(raw, f.Raw) {
 			res.Action = "unchanged"
 		}
-		e := config.Edit{Raw: raw, Touched: []string{name, target}, MustLoad: []string{name},
-			Entry: name, Want: b.want()}
-		if checking {
-			e.Verify = func(after *config.File) error {
-				a := *after.Find(name)
-				res.Checks = runChecks(a, after.Config, target, now)
-				ok := runnable(res.Checks)
-				res.Runnable = &ok
-				if o.RequireRunnable && !ok {
-					f := Fail(CodeChecksFailed, "not runnable here: %s", failing(res.Checks))
-					f.Checks = res.Checks
-					return f
-				}
-				return nil
-			}
-		}
-		return e, err
-	})
+		return config.Edit{Raw: raw, Touched: []string{name, target}, MustLoad: []string{name},
+			Entry: name, Want: b.want()}, err
+	}
+
+	// The checks run shells and ask Herdr, seconds each, so never while the
+	// file is locked: the edit is worked out first, dry, the checks run on
+	// the result, and a real write then happens only if the file is still the
+	// one that was checked.
+	before, after, err := config.Change(o.IfMatch, o.DryRun || o.RequireRunnable, edit)
 	if err != nil {
 		return nil, failure(err)
+	}
+	if o.DryRun || o.RequireRunnable {
+		res.Checks = runChecks(*after.Find(name), after.Config, target, now)
+		ok := runnable(res.Checks)
+		res.Runnable = &ok
+		if o.RequireRunnable && !ok {
+			f := Fail(CodeChecksFailed, "not runnable here: %s", failing(res.Checks))
+			f.Checks = res.Checks
+			return nil, f
+		}
+		if !o.DryRun {
+			if _, after, err = config.Change(config.Hash(before.Raw), false, edit); err != nil {
+				return nil, failure(err)
+			}
+		}
 	}
 
 	a := *after.Find(name)
