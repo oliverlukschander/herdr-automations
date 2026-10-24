@@ -129,7 +129,9 @@ func takeRequests(runs *runner.Runner, n *notify.Notifier, now time.Time) {
 			}
 		default:
 			log.Printf("%s: running now, as requested", q.Automation)
-			runs.Start(q.RunID, *a, history.TriggerManual)
+			if err := runs.StartRequested(q.RunID, *a); err != nil {
+				continue // not on record, not run: the request waits for the next tick
+			}
 			request.Remove(q.RunID)
 			continue
 		}

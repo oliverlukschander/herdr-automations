@@ -63,7 +63,7 @@ func (r *Runner) Run(a config.Automation, trigger history.Trigger) error {
 // back to the app at once, and the app looks the run up by it. A skipped
 // request is recorded under that ID too, so the app learns it was skipped.
 func (r *Runner) RunAs(id string, a config.Automation, trigger history.Trigger) error {
-	t, err := r.claim(id, a, trigger)
+	t, err := r.claim(id, a, trigger, false)
 	if err != nil {
 		return err
 	}
@@ -77,10 +77,30 @@ func (r *Runner) RunAs(id string, a config.Automation, trigger history.Trigger) 
 // re-exec on upgrade waits for it) and in the history (the app can see it),
 // with no moment between where it is neither.
 func (r *Runner) Start(id string, a config.Automation, trigger history.Trigger) {
-	t, err := r.claim(id, a, trigger)
+	r.start(id, a, trigger, false)
+}
+
+// StartRequested is Start for a run-now request, which must not run without
+// a record: the request is the app's only other trace of the run, and the
+// daemon clears it once the run is on record. When the history cannot be
+// written (a full disk), nothing runs and the error says so; the request
+// waits for the next tick. A skipped request is done, once that is recorded.
+func (r *Runner) StartRequested(id string, a config.Automation) error {
+	return r.start(id, a, history.TriggerManual, true)
+}
+
+// ErrNotRecorded means a run was not started because its first record could
+// not be written.
+var ErrNotRecorded = errors.New("the run could not be recorded")
+
+func (r *Runner) start(id string, a config.Automation, trigger history.Trigger, onRecord bool) error {
+	t, err := r.claim(id, a, trigger, onRecord)
 	if err != nil {
 		log.Printf("run %s: %v", a.Name, err)
-		return
+		if errors.Is(err, ErrNotRecorded) {
+			return err
+		}
+		return nil
 	}
 	go func() {
 		defer r.inFlight.Delete(a.Name)
@@ -88,17 +108,24 @@ func (r *Runner) Start(id string, a config.Automation, trigger history.Trigger) 
 			log.Printf("run %s: %v", a.Name, err)
 		}
 	}()
+	return nil
 }
 
 // claim takes the automation's in-flight slot and records the run as
-// scheduled, or records it skipped when a run of it is still going.
-func (r *Runner) claim(id string, a config.Automation, trigger history.Trigger) (*attempt, error) {
+// scheduled, or records it skipped when a run of it is still going. With
+// onRecord, a record that cannot be written stops the run before it starts.
+func (r *Runner) claim(id string, a config.Automation, trigger history.Trigger, onRecord bool) (*attempt, error) {
 	t := &attempt{id: id, a: a, trigger: trigger}
 	if _, busy := r.inFlight.LoadOrStore(a.Name, true); busy {
-		r.record(t, history.StatusSkipped, "previous run still in flight")
+		if err := r.record(t, history.StatusSkipped, "previous run still in flight"); err != nil && onRecord {
+			return nil, fmt.Errorf("%w: %v", ErrNotRecorded, err)
+		}
 		return nil, fmt.Errorf("%s: previous run still in flight, skipped", a.Name)
 	}
-	r.record(t, history.StatusScheduled, "")
+	if err := r.record(t, history.StatusScheduled, ""); err != nil && onRecord {
+		r.inFlight.Delete(a.Name)
+		return nil, fmt.Errorf("%w: %v", ErrNotRecorded, err)
+	}
 	return t, nil
 }
 
@@ -217,7 +244,7 @@ func statusFor(err error) history.Status {
 // record is the only writer of run history, which is what makes it the only
 // caller of notify: the two cannot drift apart, and a future status inherits
 // its notification for free without runner filtering anything.
-func (r *Runner) record(t *attempt, st history.Status, errMsg string) {
+func (r *Runner) record(t *attempt, st history.Status, errMsg string) error {
 	rec := t.base(st)
 	rec.Error = errMsg
 	if st == history.StatusFailed {
@@ -230,6 +257,7 @@ func (r *Runner) record(t *attempt, st history.Status, errMsg string) {
 		log.Printf("history append failed: %v", err)
 	}
 	r.notifier.Outcome(t.a.Name, st, errMsg)
+	return err
 }
 
 // Persist the report before closing anything; unreadable reports never authorize closure.

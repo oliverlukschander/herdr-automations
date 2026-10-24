@@ -190,3 +190,33 @@ func TestARequestIsNeverRunTwice(t *testing.T) {
 		t.Error("the request was not cleared")
 	}
 }
+
+// Review round 2, finding 6: when the history cannot be written (a full
+// disk; here a read-only file), a run-now request is neither run nor dropped:
+// it waits, and runs once its run can be on record.
+func TestARequestWaitsWhileItCannotBeRecorded(t *testing.T) {
+	sandboxWith(t, oneAutomation)
+	logFile := filepath.Join(os.Getenv("HERDR_PLUGIN_STATE_DIR"), "history.jsonl")
+	if err := os.WriteFile(logFile, nil, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	id := history.NewID("[KAN] Mails -> Kaneo", "")
+	request.Write(request.Request{RunID: id, Automation: "[KAN] Mails -> Kaneo", RequestedAt: time.Now()})
+	runs := runner.New(quietHost{})
+
+	takeRequests(runs, notify.With(&fakeSink{}), time.Now())
+	if request.Find(id) == nil {
+		t.Fatal("the request was dropped without a record")
+	}
+	if runs.Busy() {
+		t.Fatal("it ran without a record")
+	}
+
+	if err := os.Chmod(logFile, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	takeRequests(runs, notify.With(&fakeSink{}), time.Now())
+	if recs := settled(t, id); recs[len(recs)-1].Status != history.StatusDone || request.Find(id) != nil {
+		t.Errorf("after the disk came back: %+v", recs)
+	}
+}
