@@ -133,9 +133,6 @@ func (a Automation) CatchUp() time.Duration {
 }
 
 func (a *Automation) validate() error {
-	if a.CloseWhenNoAction && a.Workspace != WorkspaceExisting {
-		return fmt.Errorf("%s: close_when_no_action requires workspace: existing", a.Name)
-	}
 	if a.Name == "" {
 		return fmt.Errorf("automation without a name")
 	}

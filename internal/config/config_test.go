@@ -259,6 +259,16 @@ func TestSaveRefusesToDropTheEntriesThatDidNotLoad(t *testing.T) {
 	}
 }
 
+func TestCloseWhenNoActionAllowedOnRoot(t *testing.T) {
+	a := Automation{
+		Name: "grow", Cron: "@hourly", Repo: "/repo", Prompt: "go",
+		Workspace: WorkspaceRoot, CloseWhenNoAction: true,
+	}
+	if err := a.validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExistingWorkspaceValidation(t *testing.T) {
 	a := Automation{Name: "inbox", Cron: "@hourly", Repo: "/repo", Prompt: "check", Workspace: WorkspaceExisting}
 	if err := a.validate(); err == nil {

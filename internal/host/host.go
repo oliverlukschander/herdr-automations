@@ -194,7 +194,7 @@ func agentName(name string) string {
 
 // CloseTab refuses to close a working/blocked agent or a moved/shared tab.
 func (h *live) CloseTab(s Session, a config.Automation) error {
-	if a.Workspace != config.WorkspaceExisting || s.TabID == "" {
+	if s.TabID == "" {
 		return fmt.Errorf("run has no owned tab")
 	}
 	if a.Workflow == "" {
