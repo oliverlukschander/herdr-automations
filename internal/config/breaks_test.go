@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"maps"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -289,5 +290,21 @@ func TestAnEditAboveATypeErrorIsNotRefused(t *testing.T) {
 	onDisk(t, byHand+"  - {name: odd, cron: \"@daily\", repo: /x, prompt: p, timeout_minutes: soon}\n")
 	if _, _, _, err := SetDisabled("[HLT] Check", true, ""); err != nil {
 		t.Fatalf("pause refused: %v", err)
+	}
+}
+
+// Review round 2, finding 1: a comment closing an entry became the head of
+// the disabled: key a pause appended after it, and resume took it along.
+func TestACommentClosingAnEntrySurvivesPauseAndResume(t *testing.T) {
+	raw := "automations:\n  - name: a\n    cron: \"@daily\"\n    repo: /x\n    prompt: p\n    # TODO: lower the timeout once stable\n" +
+		"  - name: b\n    cron: \"@daily\"\n    repo: /x\n    prompt: p\n"
+	onDisk(t, raw)
+	for _, paused := range []bool{true, false} {
+		if _, _, _, err := SetDisabled("a", paused, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _ := os.ReadFile(Path()); string(got) != raw {
+		t.Errorf("pause then resume changed the file:\n%s", got)
 	}
 }

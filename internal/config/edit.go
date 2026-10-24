@@ -341,15 +341,20 @@ func editMapping(lines []line, m *yaml.Node, base, dashAt int, set []Pair, del [
 		if i+1 < len(spans) {
 			bound = spans[i+1].head
 		}
+		// A key ends at its value's last line. Comment lines back at the key's
+		// column after it belong to no key: a new key goes above them, and a
+		// removed one leaves them, so pause then resume gives the bytes back.
 		s := &spans[i]
 		s.end = s.key
 		for l := s.key + 1; l < bound; l++ {
-			if !blank(lines[l].text) {
+			if t := lines[l].text; !blank(t) && !(isComment(t) && indent(t) <= col) {
 				s.end = l
 			}
 		}
 		if keptAt(lines, s.v, base) {
-			s.end = bound - 1 // a |+ value owns the blank lines after it
+			for s.end+1 < bound && blank(lines[s.end+1].text) {
+				s.end++ // a |+ value owns the blank lines after it
+			}
 		}
 	}
 	find := func(key string) *keySpan {
