@@ -144,6 +144,11 @@ func Apply(body []byte, o ApplyOptions, now time.Time) (*ApplyResult, error) {
 		target = o.RenameFrom
 	}
 	edit := func(f *config.File) (config.Edit, error) {
+		// --new asks for a name nobody has: taken once or twice, the answer
+		// is the same.
+		if o.New && f.Declares(name) {
+			return config.Edit{}, Fail(CodeExists, "an automation named %q already exists", name)
+		}
 		// By name, an edit of a name declared twice would land on the first
 		// of them, whichever was meant.
 		if err := f.Single(target); err != nil {

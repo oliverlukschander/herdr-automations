@@ -274,3 +274,12 @@ func TestFixingADuplicateByNameIsRefused(t *testing.T) {
 		t.Errorf("written anyway:\n%s", fileNow(t))
 	}
 }
+
+// Review round 3, finding 1: --new on a name declared twice is "exists", like
+// on a name declared once, not the duplicate refusal.
+func TestNewOnADuplicatedNameIsExists(t *testing.T) {
+	sandbox(t, "automations:\n  - {name: x, cron: \"@daily\", repo: /a, prompt: p}\n  - {name: x, cron: \"@daily\", repo: /b, prompt: p}\n")
+	if _, err := Apply([]byte("name: x\ncron: \"@daily\"\nrepo: /c\nprompt: p\n"), ApplyOptions{New: true}, time.Now()); code(err) != CodeExists {
+		t.Errorf("err = %v", err)
+	}
+}
