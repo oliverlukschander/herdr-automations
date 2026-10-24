@@ -33,7 +33,9 @@ Usage:
   herdr-automations daemon           Run the scheduler (started by the plugin startup hook)
   herdr-automations add              Interactive wizard: create an automation
   herdr-automations list [--json]    List automations with schedule and last run
-  herdr-automations run <name>       Trigger an automation now
+  herdr-automations run <name>       Trigger an automation now, in this process
+  herdr-automations run <name> --detach [--json]
+                                     Hand it to the daemon and return at once
   herdr-automations pause <name>     Stop scheduling an automation (--if-match SHA, --json)
   herdr-automations resume <name>    Resume a paused automation (--if-match SHA, --json)
   herdr-automations show <name>      Print an automation as written in automations.yaml
@@ -313,6 +315,9 @@ func cleanupCmd(args []string) error {
 }
 
 func runCmd(args []string) error {
+	if slices.Contains(args, "--detach") || slices.Contains(args, "-detach") {
+		return detachCmd(args)
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -355,6 +360,30 @@ func oneName(cmd string, args []string, fs *flag.FlagSet) (string, error) {
 		return "", err
 	}
 	return rest[0], nil
+}
+
+// detachCmd is `run <name> --detach`: the daemon does the run, so it outlives
+// the SSH session that asked for it (ADR 0010).
+func detachCmd(args []string) error {
+	fs, asJSON := newFlags("run", args)
+	fs.Bool("detach", false, "hand the run to the daemon and return at once")
+	name, err := oneName("run --detach", args, fs)
+	if asJSON {
+		if err != nil {
+			emit(nil, usageError(err))
+		}
+		emit(api.RunDetached(name, time.Now()))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	res, err := api.RunDetached(name, time.Now())
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Requested %s: run %s\nFollow it with: herdr-automations history --run '%s'\n", name, res.RunID, res.RunID)
+	return nil
 }
 
 // pauseCmd changes only the entry's disabled: line, so a hand-written file

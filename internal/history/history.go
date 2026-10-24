@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/DnzzL/herdr-automations/internal/config"
@@ -40,6 +42,11 @@ const (
 	// Closing a run's workspace is how you call one off, so it is not a
 	// failure: nothing broke, somebody decided.
 	StatusCancelled Status = "cancelled"
+	// StatusInterrupted records a run whose runner process died under it: an
+	// SSH session that hung up on a CLI `run`, a daemon killed with the Herdr
+	// server. Its last record said scheduled or running, and nothing was left
+	// to ever say otherwise.
+	StatusInterrupted Status = "interrupted"
 )
 
 // Trigger is why a run started. CONTEXT.md names three.
@@ -77,6 +84,21 @@ type Record struct {
 	WorkspaceID        string    `json:"workspace_id,omitempty"`
 	PaneID             string    `json:"pane_id,omitempty"`
 	Error              string    `json:"error,omitempty"`
+	// RunnerPID is the process carrying the run out. A run that is still
+	// scheduled or running while this process is gone was interrupted.
+	RunnerPID int `json:"runner_pid,omitempty"`
+}
+
+// Orphaned reports whether a run's latest record says it is under way while
+// the process running it is gone. Records from before RunnerPID existed say
+// nothing either way. A reused PID makes a dead run look alive, never the
+// other way round.
+func Orphaned(r Record) bool {
+	if r.RunnerPID <= 0 || (r.Status != StatusScheduled && r.Status != StatusRunning) {
+		return false
+	}
+	err := syscall.Kill(r.RunnerPID, 0)
+	return err != nil && !errors.Is(err, syscall.EPERM)
 }
 
 func path() string { return filepath.Join(config.StateDir(), "history.jsonl") }

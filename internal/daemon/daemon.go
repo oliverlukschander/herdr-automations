@@ -18,6 +18,7 @@ import (
 	"github.com/DnzzL/herdr-automations/internal/history"
 	"github.com/DnzzL/herdr-automations/internal/host"
 	"github.com/DnzzL/herdr-automations/internal/notify"
+	"github.com/DnzzL/herdr-automations/internal/request"
 	"github.com/DnzzL/herdr-automations/internal/runner"
 	"github.com/DnzzL/herdr-automations/internal/schedule"
 )
@@ -28,6 +29,14 @@ const tickInterval = 30 * time.Second
 
 func Run() error {
 	log.SetPrefix("[herdr-automations] ")
+
+	// Listen before taking the lock: the lock is what tells `run --detach`
+	// there is a daemon to wake, and SIGUSR1 kills a process that is not
+	// listening for it.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	wake := make(chan os.Signal, 1)
+	signal.Notify(wake, syscall.SIGUSR1)
 
 	release, err := acquireLock()
 	if err != nil {
@@ -41,12 +50,12 @@ func Run() error {
 	n := notify.New()
 	runs := runner.NewWith(host.New(), n)
 
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	tick := time.NewTicker(tickInterval)
 	defer tick.Stop()
 
+	sweepInterrupted(n)
 	evaluate(state, runs, n) // don't wait a full tick to notice what is already due
+	takeRequests(runs, n, time.Now())
 
 	for {
 		select {
@@ -55,10 +64,90 @@ func Run() error {
 				restart(release, runs)
 			}
 			evaluate(state, runs, n)
+			takeRequests(runs, n, time.Now())
+		case <-wake:
+			takeRequests(runs, n, time.Now())
 		case s := <-sigs:
 			log.Printf("received %v, shutting down", s)
 			return nil
 		}
+	}
+}
+
+// takeRequests starts the runs asked for with `run --detach`, under the IDs
+// the CLI already handed out. A request that waited past request.MaxWait is
+// dropped and recorded missed: occurrences are dropped, never queued.
+func takeRequests(runs *runner.Runner, n *notify.Notifier, now time.Time) {
+	reqs, err := request.Take()
+	if err != nil {
+		log.Printf("reading run-now requests: %v", err)
+		return
+	}
+	if len(reqs) == 0 {
+		return
+	}
+	cfg, cfgErr := config.Load()
+	var missed []string
+	for _, q := range reqs {
+		rec := history.Record{RunID: q.RunID, Automation: q.Automation, Trigger: history.TriggerManual, At: now}
+		var a *config.Automation
+		if cfgErr == nil {
+			a = cfg.Find(q.Automation)
+		}
+		switch {
+		case q.Stale(now):
+			rec.Status = history.StatusMissed
+			rec.Error = fmt.Sprintf("the run-now request waited %s for the scheduler and was dropped",
+				now.Sub(q.RequestedAt).Round(time.Second))
+			missed = append(missed, q.Automation)
+		case a == nil:
+			rec.Status = history.StatusFailed
+			rec.Error = "no automation by that name loads any more"
+			if cfgErr != nil {
+				rec.Error = cfgErr.Error()
+			} else if d := cfg.Diagnostic(q.Automation); d != nil {
+				rec.Error = d.String()
+			}
+		default:
+			log.Printf("%s: running now, as requested", q.Automation)
+			go func(id string, a config.Automation) {
+				if err := runs.RunAs(id, a, history.TriggerManual); err != nil {
+					log.Printf("run %s: %v", a.Name, err)
+				}
+			}(q.RunID, *a)
+			continue
+		}
+		if err := history.Append(rec); err != nil {
+			log.Printf("history append failed: %v", err)
+		}
+	}
+	n.Tick(missed, nil)
+}
+
+// sweepInterrupted closes the runs a dead process left open. A run whose last
+// record says scheduled or running, while the process that wrote it is gone,
+// will never say anything else: a CLI run whose SSH session hung up, or the
+// runs of a daemon killed with the Herdr server. Run once at start; the views
+// in internal/api already show such runs as interrupted in between.
+func sweepInterrupted(n *notify.Notifier) {
+	runs, err := history.Runs("", 0)
+	if err != nil {
+		log.Printf("looking for interrupted runs: %v", err)
+		return
+	}
+	for _, r := range runs {
+		if !history.Orphaned(r) {
+			continue
+		}
+		msg := fmt.Sprintf("the process running it (pid %d) exited before it finished", r.RunnerPID)
+		required := true
+		r.Status, r.At, r.Error, r.Summary, r.UserActionRequired = history.StatusInterrupted, time.Now(), msg, msg, &required
+		if err := history.Append(r); err != nil {
+			log.Printf("history append failed: %v", err)
+			continue
+		}
+		log.Printf("%s: %s", r.Automation, msg)
+		n.Outcome(r.Automation, history.StatusInterrupted, msg)
 	}
 }
 

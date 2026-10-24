@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -119,13 +120,23 @@ func fieldsOf(r history.Record) runFields {
 	}
 }
 
+// runOf is the view of a run's latest record. A run whose process died under
+// it is shown as interrupted right away; the daemon only writes that down
+// the next time it starts.
 func runOf(r history.Record) Run {
 	started, _ := history.StartedAt(r.RunID)
-	return Run{
+	run := Run{
 		RunID: r.RunID, Automation: r.Automation, Status: string(r.Status),
 		Trigger: str(string(r.Trigger)), StartedAt: Time{started}, UpdatedAt: Time{r.At},
 		runFields: fieldsOf(r),
 	}
+	if history.Orphaned(r) {
+		required := true
+		run.Status = string(history.StatusInterrupted)
+		run.Error = str(fmt.Sprintf("the process running it (pid %d) exited before it finished", r.RunnerPID))
+		run.Summary, run.UserActionRequired = run.Error, &required
+	}
+	return run
 }
 
 func recordOf(r history.Record) Record {

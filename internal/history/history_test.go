@@ -3,6 +3,7 @@ package history
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -159,5 +160,30 @@ func TestStartedAtReadsWhatNewIDWrote(t *testing.T) {
 	}
 	if _, ok := StartedAt("r-1"); ok {
 		t.Error("a counter suffix is not a start time")
+	}
+}
+
+// A run is orphaned only when it claims to be under way and the process that
+// claimed it is gone.
+func TestOrphanedNeedsADeadRunnerAndAnUnfinishedRun(t *testing.T) {
+	gone := exec.Command("true")
+	if err := gone.Run(); err != nil {
+		t.Fatal(err)
+	}
+	dead, live := gone.Process.Pid, os.Getpid()
+	cases := []struct {
+		r    Record
+		want bool
+	}{
+		{Record{Status: StatusRunning, RunnerPID: dead}, true},
+		{Record{Status: StatusScheduled, RunnerPID: dead}, true},
+		{Record{Status: StatusRunning, RunnerPID: live}, false},
+		{Record{Status: StatusDone, RunnerPID: dead}, false},
+		{Record{Status: StatusRunning}, false}, // written before RunnerPID existed
+	}
+	for _, c := range cases {
+		if got := Orphaned(c.r); got != c.want {
+			t.Errorf("Orphaned(%s, pid %d) = %v", c.r.Status, c.r.RunnerPID, got)
+		}
 	}
 }

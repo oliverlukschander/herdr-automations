@@ -19,6 +19,10 @@ it's `missed`.
 **Trigger** — why a run started: `cron` (on time), `catchup` (late but inside
 the window) or `manual` (`r` on the board, or `herdr-automations run`).
 
+**Request** — a run-now asked for with `run --detach`, waiting in the state dir
+for the daemon to take it (ADR 0010). It already has its run ID. A request
+nobody takes within two minutes becomes a `missed` run, never a late one.
+
 **Session** — a provisioned workspace plus the pane its agent lives in. What
 `host.Provision` hands back. The place a run happens.
 
@@ -50,6 +54,9 @@ sorted into what can go and what stays.
   was asleep past the catch-up window.
 - **invalid** is an automation the scheduler could not read. Not a run that
   failed; a run that was never possible.
+- **interrupted** is a run whose process died under it — an SSH session that
+  hung up, a daemon killed with Herdr. Nobody decided it, so unlike
+  `cancelled` it is announced like a failure.
 
 ## Two things that are easy to confuse
 

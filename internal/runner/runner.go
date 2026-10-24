@@ -55,14 +55,19 @@ func (r *Runner) Busy() bool {
 // the 9:00 run is still working at 10:00, the 10:00 occurrence is dropped and
 // recorded as such.
 func (r *Runner) Run(a config.Automation, trigger history.Trigger) error {
+	return r.RunAs(history.NewID(a.Name, ""), a, trigger)
+}
+
+// RunAs is Run under an ID chosen beforehand: a run-now request hands its ID
+// back to the app at once, and the app looks the run up by it. A skipped
+// request is recorded under that ID too, so the app learns it was skipped.
+func (r *Runner) RunAs(id string, a config.Automation, trigger history.Trigger) error {
 	if _, busy := r.inFlight.LoadOrStore(a.Name, true); busy {
-		r.record(history.NewID(a.Name, ""), a.Name, trigger, history.StatusSkipped, host.Session{},
-			"previous run still in flight")
+		r.record(id, a.Name, trigger, history.StatusSkipped, host.Session{}, "previous run still in flight")
 		return fmt.Errorf("%s: previous run still in flight, skipped", a.Name)
 	}
 	defer r.inFlight.Delete(a.Name)
 
-	id := history.NewID(a.Name, "")
 	r.record(id, a.Name, trigger, history.StatusScheduled, host.Session{}, "")
 
 	if a.CloseWhenNoAction {
@@ -132,7 +137,7 @@ func statusFor(err error) history.Status {
 func (r *Runner) record(id, name string, trigger history.Trigger, st history.Status, s host.Session, errMsg string) {
 	rec := history.Record{
 		RunID: id, Automation: name, Trigger: trigger, Status: st, At: time.Now(),
-		WorkspaceID: s.WorkspaceID, PaneID: s.PaneID, Error: errMsg,
+		WorkspaceID: s.WorkspaceID, PaneID: s.PaneID, Error: errMsg, RunnerPID: os.Getpid(),
 	}
 	if st == history.StatusFailed {
 		required := true
@@ -157,7 +162,8 @@ func (r *Runner) complete(id string, a config.Automation, trigger history.Trigge
 		status = history.StatusNeedsAction
 	}
 	rec := history.Record{RunID: id, Automation: a.Name, Trigger: trigger, Status: status, At: time.Now(),
-		WorkspaceID: s.WorkspaceID, PaneID: s.PaneID, UserActionRequired: rep.UserActionRequired, Summary: rep.Summary, ReportPath: a.ReportPath}
+		WorkspaceID: s.WorkspaceID, PaneID: s.PaneID, UserActionRequired: rep.UserActionRequired, Summary: rep.Summary,
+		ReportPath: a.ReportPath, RunnerPID: os.Getpid()}
 	if err := history.Append(rec); err != nil {
 		return fmt.Errorf("cannot preserve completion report; tab kept open: %w", err)
 	}

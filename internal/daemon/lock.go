@@ -52,7 +52,7 @@ func acquireLock() (release func(), err error) {
 		releaseFile(f)
 		return nil, err
 	}
-	if _, err := f.WriteAt([]byte(strconv.Itoa(os.Getpid())), 0); err != nil {
+	if _, err := f.WriteAt([]byte(strconv.Itoa(os.Getpid())+"\n"+takesRequests+"\n"), 0); err != nil {
 		releaseFile(f)
 		return nil, err
 	}
@@ -72,11 +72,18 @@ const (
 
 func pidPath() string { return filepath.Join(config.StateDir(), "daemon.pid") }
 
+// takesRequests is the pidfile's second line: this daemon handles SIGUSR1 by
+// taking run-now requests. One from before that dies of the signal instead,
+// and `run --detach` must not send it one.
+const takesRequests = "requests"
+
 // Status is what Probe found out about the scheduler on this machine.
 type Status struct {
 	Running bool
 	// PID is what the pidfile says, when a daemon holds it.
 	PID int
+	// TakesRequests is set when that daemon can be woken with SIGUSR1.
+	TakesRequests bool
 	// Since is when that daemon took the lock: the pidfile is written then.
 	Since time.Time
 }
@@ -100,6 +107,10 @@ func Probe() Status {
 	}
 	st := Status{Running: true}
 	st.PID, _ = strconv.Atoi(holderPID(path))
+	if raw, err := os.ReadFile(path); err == nil {
+		lines := strings.Split(string(raw), "\n")
+		st.TakesRequests = len(lines) > 1 && strings.TrimSpace(lines[1]) == takesRequests
+	}
 	if info, err := f.Stat(); err == nil {
 		st.Since = info.ModTime()
 	}
@@ -113,14 +124,15 @@ func releaseFile(f *os.File) {
 	f.Close()
 }
 
-// holderPID reports what the pidfile claims, for the error message only. The
-// file may be empty if the holder has not written its PID yet.
+// holderPID reports what the pidfile claims: its first line. The file may be
+// empty if the holder has not written its PID yet.
 func holderPID(path string) string {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return "unknown"
 	}
-	if pid := strings.TrimSpace(string(raw)); pid != "" {
+	first, _, _ := strings.Cut(string(raw), "\n")
+	if pid := strings.TrimSpace(first); pid != "" {
 		return pid
 	}
 	return "unknown"

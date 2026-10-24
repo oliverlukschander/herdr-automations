@@ -2,6 +2,7 @@ package api
 
 import (
 	"github.com/DnzzL/herdr-automations/internal/history"
+	"github.com/DnzzL/herdr-automations/internal/request"
 )
 
 // HistoryResult is `history --json [name] [--limit N]`.
@@ -37,6 +38,15 @@ func RunTimeline(runID string) (*RunResult, error) {
 		return nil, err
 	}
 	if len(recs) == 0 {
+		// Asked for with run --detach and not yet taken by the daemon.
+		if q := request.Find(runID); q != nil {
+			started, _ := history.StartedAt(runID)
+			manual := string(history.TriggerManual)
+			return &RunResult{Records: []Record{}, Run: Run{
+				RunID: runID, Automation: q.Automation, Status: "requested", Trigger: &manual,
+				StartedAt: Time{started}, UpdatedAt: Time{q.RequestedAt},
+			}}, nil
+		}
 		return nil, Fail(CodeNotFound, "no run %q in the history", runID)
 	}
 	res := &RunResult{Run: runOf(recs[len(recs)-1]), Records: []Record{}}

@@ -48,7 +48,7 @@ func TestAcquireLockIgnoresStalePIDOwnedByAnotherProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read pidfile: %v", err)
 	}
-	if want := strconv.Itoa(os.Getpid()); string(got) != want {
+	if want := strconv.Itoa(os.Getpid()) + "\nrequests\n"; string(got) != want {
 		t.Errorf("pidfile = %q, want %q", got, want)
 	}
 }
@@ -138,7 +138,7 @@ func TestProbeSeesTheDaemonOfAnotherProcess(t *testing.T) {
 	}
 
 	st := Probe()
-	if !st.Running || st.PID != cmd.Process.Pid || time.Since(st.Since) > time.Minute {
+	if !st.Running || st.PID != cmd.Process.Pid || !st.TakesRequests || time.Since(st.Since) > time.Minute {
 		t.Errorf("Probe() = %+v, want running as pid %d since just now", st, cmd.Process.Pid)
 	}
 

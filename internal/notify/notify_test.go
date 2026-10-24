@@ -71,6 +71,19 @@ func TestOutcomeToastsAFailureWithTheReasonAndASound(t *testing.T) {
 	}
 }
 
+// An interrupted run is announced like a failed one: nobody decided it, and
+// the work may be half done (ADR 0010).
+func TestOutcomeToastsAnInterruptedRunLikeAFailure(t *testing.T) {
+	sink := &fakeSink{}
+	With(sink).Outcome("triage", history.StatusInterrupted, "the process running it (pid 4242) exited")
+	if len(sink.toasts) != 1 {
+		t.Fatalf("toasts = %+v, want exactly one", sink.toasts)
+	}
+	if got := sink.toasts[0]; got.title != "triage was interrupted" || got.sound != herdr.SoundRequest {
+		t.Errorf("toast = %+v", got)
+	}
+}
+
 func TestTickToastsOneLineForManyMissedRuns(t *testing.T) {
 	sink := &fakeSink{}
 	names := make([]string, 20)
