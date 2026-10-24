@@ -91,7 +91,7 @@ func Show(name string, now time.Time) (*ShowResult, error) {
 func Delete(name, ifMatch string) (*DeleteResult, error) {
 	_, after, err := config.Change(ifMatch, false, func(f *config.File) (config.Edit, error) {
 		it := f.Item(name)
-		if it == nil {
+		if it == nil || name == "" { // an entry without a name cannot be told apart from another
 			return config.Edit{}, &config.NotFoundError{Name: name}
 		}
 		raw, err := f.Remove(*it)
@@ -172,7 +172,8 @@ func Apply(body []byte, o ApplyOptions, now time.Time) (*ApplyResult, error) {
 		if err == nil && bytes.Equal(raw, f.Raw) {
 			res.Action = "unchanged"
 		}
-		e := config.Edit{Raw: raw, Touched: []string{name, target}, MustLoad: []string{name}}
+		e := config.Edit{Raw: raw, Touched: []string{name, target}, MustLoad: []string{name},
+			Entry: name, Want: b.want()}
 		if checking {
 			e.Verify = func(after *config.File) error {
 				a := *after.Find(name)
@@ -381,6 +382,23 @@ func (b body) check() (string, error) {
 		return "", f
 	}
 	return name, nil
+}
+
+// want is the entry as it has to read back once written: the body's data. In
+// a JSON body null means "not set", so those keys are not there at all.
+func (b body) want() map[string]any {
+	m := map[string]any{}
+	if b.node.Decode(&m) != nil {
+		return nil
+	}
+	if b.json {
+		for k, v := range m {
+			if v == nil {
+				delete(m, k)
+			}
+		}
+	}
+	return m
 }
 
 // pairs is every key of a JSON body that has a value; null means "not set".

@@ -59,7 +59,7 @@ func loaded(t *testing.T, raw string) *File {
 // [from, to] of before (0-based, inclusive): every other line byte-identical.
 func onlyChanged(t *testing.T, before, after []byte, from, to int) {
 	t.Helper()
-	b, a := splitLines(before), splitLines(after)
+	b, a := texts(before), texts(after)
 	pre := 0
 	for pre < len(b) && pre < len(a) && b[pre] == a[pre] {
 		pre++

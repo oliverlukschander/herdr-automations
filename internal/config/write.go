@@ -10,9 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Edit is one change to automations.yaml: the text the file should have
@@ -24,6 +28,11 @@ type Edit struct {
 	Touched []string
 	// MustLoad names the touched entries that have to load afterwards.
 	MustLoad []string
+	// Entry, when set, is the entry the edit means to write, and Want what it
+	// must read back as, as plain data: the check that the edit landed on the
+	// lines it meant to and nowhere else.
+	Entry string
+	Want  map[string]any
 	// Verify, when set, sees the result before it is written and can still
 	// refuse it.
 	Verify func(after *File) error
@@ -76,6 +85,13 @@ func Hash(raw []byte) string {
 // dryRun, the result is then written atomically. It returns the file as it
 // was and as it is (or would be).
 func Change(ifMatch string, dryRun bool, edit func(f *File) (Edit, error)) (before, after *File, err error) {
+	defer func() {
+		// Nothing is written once anything has panicked: the write is the
+		// last step.
+		if r := recover(); r != nil {
+			before, after, err = nil, nil, &RefusedError{Message: fmt.Sprintf("internal error while editing, nothing written: %v", r)}
+		}
+	}()
 	unlock, err := lockFile()
 	if err != nil {
 		return nil, nil, err
@@ -133,12 +149,45 @@ func keeps(before, after *File, e Edit) error {
 		}
 	}
 
+	if e.Entry != "" {
+		it := after.Item(e.Entry)
+		if it == nil {
+			return &RefusedError{Message: fmt.Sprintf("the change lost %s; nothing written", e.Entry)}
+		}
+		got, err := it.Map()
+		if err != nil || !reflect.DeepEqual(got, e.Want) {
+			return &RefusedError{Message: fmt.Sprintf("the change would not write %s as given; nothing written", e.Entry)}
+		}
+	}
+
 	touched := func(name string) bool { return slices.Contains(e.Touched, name) }
+	// Byte for byte, in order: every entry the edit was not about keeps its
+	// text, and one that could be edited here still can. An entry that cannot
+	// keeps its structure: its Text is a re-encoding, not its bytes. The edit
+	// is about the first entry of each name it names, the one Item finds; a
+	// later duplicate, or an entry with no name at all, is held like any other.
+	untouched := func(f *File) []string {
+		skip := slices.Clone(e.Touched)
+		var out []string
+		for _, it := range f.Items {
+			if i := slices.Index(skip, it.Name); i >= 0 {
+				skip = slices.Delete(skip, i, i+1)
+				continue
+			}
+			out = append(out, it.Name+"\x00"+f.untouchable(it))
+		}
+		return out
+	}
+	if !slices.Equal(untouched(before), untouched(after)) {
+		return &RefusedError{Message: "the change would reach into other entries; nothing written"}
+	}
 	diagnosed := func(f *File) map[string]int {
 		out := map[string]int{}
 		for _, d := range f.Invalid {
 			if !touched(d.Name) {
-				out[d.Name+"\x00"+d.Message]++
+				// yaml.v3 puts line numbers into some messages ("already
+				// defined at line 18"); an edit above moves them.
+				out[d.Name+"\x00"+lineNumber.ReplaceAllString(d.Message, "line #")]++
 			}
 		}
 		return out
@@ -167,6 +216,33 @@ func keeps(before, after *File, e Edit) error {
 		return &RefusedError{Message: "the change would alter other entries"}
 	}
 	return nil
+}
+
+var lineNumber = regexp.MustCompile(`line \d+`)
+
+// untouchable is what an entry an edit was not about must still be
+// afterwards: its bytes, when it can be edited here, else its structure.
+func (f *File) untouchable(it Item) string {
+	if it.first >= 0 {
+		return f.Text(it)
+	}
+	return "\x01" + fingerprint(it.node)
+}
+
+// fingerprint is a node's structure (kinds, tags, values), without positions
+// or comments.
+func fingerprint(n *yaml.Node) string {
+	var b strings.Builder
+	var walk func(*yaml.Node)
+	walk = func(n *yaml.Node) {
+		fmt.Fprintf(&b, "(%d %s %q", n.Kind, n.Tag, n.Value)
+		for _, c := range n.Content {
+			walk(c)
+		}
+		b.WriteByte(')')
+	}
+	walk(n)
+	return b.String()
 }
 
 // lockWait is how long a writer waits for another one. Writes take

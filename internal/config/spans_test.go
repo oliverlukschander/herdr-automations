@@ -40,7 +40,7 @@ func spansOf(t *testing.T, raw string) (*File, []string) {
 	if len(f.Items) != 3 {
 		t.Fatalf("items = %d, want 3", len(f.Items))
 	}
-	return f, splitLines(f.Raw)
+	return f, texts(f.Raw)
 }
 
 func TestAnEntryOwnsItsLinesAndNothingBetween(t *testing.T) {
@@ -80,8 +80,17 @@ func TestALastEntryWithAnIndentedCommentKeepsGoingPastIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lines := splitLines(f.Raw)
+	lines := texts(f.Raw)
 	if it := f.Items[0]; lines[it.last] != "  prompt: p" {
 		t.Errorf("last line = %q, want the prompt line", lines[it.last])
 	}
+}
+
+// texts is raw's lines, as yaml.v3 counts them, without their breaks.
+func texts(raw []byte) []string {
+	var out []string
+	for _, l := range splitLines(raw) {
+		out = append(out, l.text)
+	}
+	return out
 }

@@ -67,6 +67,15 @@ func main() {
 		os.Exit(2)
 	}
 	api.Version = Version
+	if slices.Contains(os.Args, "--json") || slices.Contains(os.Args, "-json") {
+		// Whatever goes wrong, the app gets its one JSON object. Everything
+		// is meant never to panic; this is the net under that.
+		defer func() {
+			if r := recover(); r != nil {
+				emit(nil, fmt.Errorf("internal error: %v", r))
+			}
+		}()
+	}
 	var err error
 	switch os.Args[1] {
 	case "daemon":

@@ -238,6 +238,8 @@ type File struct {
 	dash int
 	// keyLine is the 0-based line of the automations: key, -1 when absent.
 	keyLine int
+	// lines is Raw cut where yaml.v3 counts lines (lines.go).
+	lines []line
 }
 
 // Item is one entry of the automations sequence, valid or not.
@@ -261,7 +263,7 @@ func (it Item) Decode(v any) error { return it.node.Decode(v) }
 func Read() (*File, error) {
 	raw, err := os.ReadFile(Path())
 	if os.IsNotExist(err) {
-		return &File{Config: &Config{}, dash: -1, keyLine: -1}, nil
+		return &File{Config: &Config{}, lines: splitLines(nil), dash: -1, keyLine: -1}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -275,7 +277,16 @@ func Read() (*File, error) {
 }
 
 // parse loads a config from its text.
-func parse(raw []byte) (*File, error) {
+//
+// It never panics. Everything below is meant not to, and the recover is the
+// last line of defence: the daemon loads the file every 30 s, and a loader
+// that panics on some file is a scheduler that is gone for good.
+func parse(raw []byte) (f *File, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			f, err = nil, fmt.Errorf("parse %s: cannot read it (%v)", Path(), r)
+		}
+	}()
 	// Decoding through yaml.Node rather than straight into Config is what buys
 	// the line numbers: a diagnostic that cannot say where to look is only
 	// marginally better than silence.
@@ -283,8 +294,9 @@ func parse(raw []byte) (*File, error) {
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", Path(), err)
 	}
-	f := &File{Config: &Config{}, Raw: raw, dash: -1, keyLine: -1}
+	f = &File{Config: &Config{}, Raw: raw, lines: splitLines(raw), dash: -1, keyLine: -1}
 	var seq *yaml.Node
+	next := len(f.lines) // the top-level key after automations:, if any
 	if len(doc.Content) > 0 {
 		root := doc.Content[0]
 		if root.Kind != yaml.MappingNode && !isNull(root) {
@@ -299,6 +311,9 @@ func parse(raw []byte) (*File, error) {
 			}
 			f.keyLine = root.Content[i].Line - 1
 			seq = root.Content[i+1]
+			if i+2 < len(root.Content) {
+				next = root.Content[i+2].Line - 1
+			}
 		}
 	}
 	switch {
@@ -340,7 +355,7 @@ func parse(raw []byte) (*File, error) {
 		seen[a.Name] = true
 		cfg.Automations = append(cfg.Automations, a)
 	}
-	f.locate(seq)
+	f.locate(seq, next)
 	return f, nil
 }
 
