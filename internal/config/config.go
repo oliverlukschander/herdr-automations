@@ -223,6 +223,8 @@ type File struct {
 	// dash is the 0-based column of the sequence's dashes, or -1 when the
 	// automations are not a block sequence and have no lines of their own.
 	dash int
+	// keyLine is the 0-based line of the automations: key, -1 when absent.
+	keyLine int
 }
 
 // Item is one entry of the automations sequence, valid or not.
@@ -246,7 +248,7 @@ func (it Item) Decode(v any) error { return it.node.Decode(v) }
 func Read() (*File, error) {
 	raw, err := os.ReadFile(Path())
 	if os.IsNotExist(err) {
-		return &File{Config: &Config{}, dash: -1}, nil
+		return &File{Config: &Config{}, dash: -1, keyLine: -1}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -264,16 +266,30 @@ func parse(raw []byte) (*File, error) {
 	// Decoding through yaml.Node rather than straight into Config is what buys
 	// the line numbers: a diagnostic that cannot say where to look is only
 	// marginally better than silence.
-	var doc struct {
-		Automations yaml.Node `yaml:"automations"`
-	}
+	var doc yaml.Node
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", Path(), err)
 	}
-	seq := &doc.Automations
-	f := &File{Config: &Config{}, Raw: raw, dash: -1}
+	f := &File{Config: &Config{}, Raw: raw, dash: -1, keyLine: -1}
+	var seq *yaml.Node
+	if len(doc.Content) > 0 {
+		root := doc.Content[0]
+		if root.Kind != yaml.MappingNode && !isNull(root) {
+			return nil, fmt.Errorf("parse %s: line %d: expected automations: at the top", Path(), root.Line)
+		}
+		for i := 0; i+1 < len(root.Content); i += 2 {
+			if root.Content[i].Value != "automations" {
+				continue
+			}
+			if seq != nil {
+				return nil, fmt.Errorf("parse %s: line %d: automations is declared twice", Path(), root.Content[i].Line)
+			}
+			f.keyLine = root.Content[i].Line - 1
+			seq = root.Content[i+1]
+		}
+	}
 	switch {
-	case seq.Kind == 0, seq.Kind == yaml.ScalarNode && seq.Tag == "!!null":
+	case seq == nil, isNull(seq), seq.Kind == yaml.SequenceNode && len(seq.Content) == 0:
 		return f, nil // no automations yet
 	case seq.Kind != yaml.SequenceNode:
 		return nil, fmt.Errorf("parse %s: line %d: automations must be a list", Path(), seq.Line)
@@ -315,6 +331,8 @@ func parse(raw []byte) (*File, error) {
 	return f, nil
 }
 
+func isNull(n *yaml.Node) bool { return n.Kind == yaml.ScalarNode && n.Tag == "!!null" }
+
 // nameOf recovers just the name from an entry too malformed to decode whole,
 // so the diagnostic can still say which automation it is about.
 func nameOf(node yaml.Node) string {
@@ -337,7 +355,9 @@ func cleanYAMLError(err error) string {
 	return strings.TrimPrefix(msg, "yaml: ")
 }
 
-// Save writes the config back, creating the directory on first use.
+// Save writes the config back, creating the directory on first use. It
+// re-marshals the whole file, so only the wizard still uses it; every other
+// writer goes through Change and touches one entry's lines.
 //
 // It refuses while anything in the file failed to load. Save marshals what the
 // Config holds, and a Config holds only the entries that loaded — so writing
@@ -350,14 +370,16 @@ func Save(cfg *Config) error {
 			filepath.Base(Path()), len(cfg.Invalid),
 			plural(len(cfg.Invalid), "y", "ies"), cfg.Invalid[0])
 	}
-	if err := os.MkdirAll(Dir(), 0o755); err != nil {
-		return err
-	}
 	out, err := yaml.Marshal(cfg)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(Path(), out, 0o644)
+	unlock, err := lockFile()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return write(out)
 }
 
 // Find returns the automation named name, or nil.
