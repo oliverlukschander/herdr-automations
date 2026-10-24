@@ -75,3 +75,15 @@ func TestARunWhoseProcessDiedShowsAsInterrupted(t *testing.T) {
 		t.Fatalf("history: %+v %v", res, err)
 	}
 }
+
+// Review finding 2: with no daemon to take it, a request is missed once it
+// has waited past request.MaxWait, not "requested" forever.
+func TestAnUntakenRequestTurnsMissed(t *testing.T) {
+	sandbox(t, kept)
+	id := history.NewID("other", "")
+	request.Write(request.Request{RunID: id, Automation: "other", RequestedAt: time.Now().Add(-request.MaxWait - time.Second)})
+	res, err := RunTimeline(id)
+	if err != nil || res.Run.Status != "missed" || res.Run.Error == nil {
+		t.Fatalf("run = %+v, %v", res, err)
+	}
+}

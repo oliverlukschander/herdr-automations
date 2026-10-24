@@ -1,6 +1,9 @@
 package api
 
 import (
+	"fmt"
+	"time"
+
 	"github.com/DnzzL/herdr-automations/internal/history"
 	"github.com/DnzzL/herdr-automations/internal/request"
 )
@@ -38,14 +41,21 @@ func RunTimeline(runID string) (*RunResult, error) {
 		return nil, err
 	}
 	if len(recs) == 0 {
-		// Asked for with run --detach and not yet taken by the daemon.
+		// Asked for with run --detach and not yet taken by the daemon. Past
+		// request.MaxWait no daemon will run it any more: it is what the
+		// daemon would record it as, missed.
 		if q := request.Find(runID); q != nil {
 			started, _ := history.StartedAt(runID)
 			manual := string(history.TriggerManual)
-			return &RunResult{Records: []Record{}, Run: Run{
+			run := Run{
 				RunID: runID, Automation: q.Automation, Status: "requested", Trigger: &manual,
 				StartedAt: Time{started}, UpdatedAt: Time{q.RequestedAt},
-			}}, nil
+			}
+			if now := time.Now(); q.Stale(now) {
+				run.Status, run.UpdatedAt = string(history.StatusMissed), Time{now}
+				run.Error = str(fmt.Sprintf("no scheduler took the run-now request within %s", request.MaxWait))
+			}
+			return &RunResult{Records: []Record{}, Run: run}, nil
 		}
 		return nil, Fail(CodeNotFound, "no run %q in the history", runID)
 	}
