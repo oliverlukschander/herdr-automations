@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"maps"
 	"os"
 	"reflect"
@@ -344,5 +345,21 @@ func TestAppendingAfterAnEntryThatCannotBeEdited(t *testing.T) {
 	})
 	if err != nil || after.Find("b") == nil || after.Find("a").Repo != "/x" {
 		t.Fatalf("append: %v", err)
+	}
+}
+
+// Review round 2, finding 2 and 4: a name declared twice cannot be edited by
+// name; the refusal names every line.
+func TestADuplicatedNameIsNotEditedByName(t *testing.T) {
+	raw := "automations:\n  - name: x\n    cron: \"@daily\"\n    repo: /good\n    prompt: keep me\n" +
+		"  - name: x\n    cron: \"@daily\"\n    repo: /dup\n    prompt: p\n"
+	onDisk(t, raw)
+	_, _, _, err := SetDisabled("x", true, "")
+	var dup *DuplicateError
+	if !errors.As(err, &dup) || !reflect.DeepEqual(dup.Lines, []int{2, 6}) || !strings.Contains(err.Error(), "lines 2, 6") {
+		t.Fatalf("err = %v", err)
+	}
+	if got, _ := os.ReadFile(Path()); string(got) != raw {
+		t.Error("written anyway")
 	}
 }

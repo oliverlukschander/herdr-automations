@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -63,6 +64,37 @@ type UnreadableError struct{ Err error }
 
 func (e *UnreadableError) Error() string { return e.Err.Error() }
 func (e *UnreadableError) Unwrap() error { return e.Err }
+
+// DuplicateError means a name is declared more than once. Edits address an
+// entry by its name, and with two of them an edit meant for the second would
+// land on the first: the file has to be fixed by hand.
+type DuplicateError struct {
+	Name  string
+	Lines []int
+}
+
+func (e *DuplicateError) Error() string {
+	at := make([]string, len(e.Lines))
+	for i, l := range e.Lines {
+		at[i] = strconv.Itoa(l)
+	}
+	return fmt.Sprintf("%q is declared %d times in automations.yaml (lines %s); fix that by hand, then edit it here",
+		e.Name, len(e.Lines), strings.Join(at, ", "))
+}
+
+// Single returns a DuplicateError when name is declared more than once.
+func (f *File) Single(name string) error {
+	var lines []int
+	for _, it := range f.Items {
+		if it.Name == name {
+			lines = append(lines, it.Line)
+		}
+	}
+	if len(lines) > 1 {
+		return &DuplicateError{Name: name, Lines: lines}
+	}
+	return nil
+}
 
 // NotFoundError means no entry, loaded or not, has that name.
 type NotFoundError struct{ Name string }

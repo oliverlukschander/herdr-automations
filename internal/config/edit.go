@@ -185,6 +185,9 @@ func SetDisabled(name string, disabled bool, ifMatch string) (changed bool, befo
 		if it == nil || name == "" {
 			return Edit{}, &NotFoundError{Name: name}
 		}
+		if err := f.Single(name); err != nil {
+			return Edit{}, err
+		}
 		a := f.Find(name)
 		if a == nil || a.Line != it.Line {
 			refusal := &RefusedError{Message: name + " did not load; fix it first"}

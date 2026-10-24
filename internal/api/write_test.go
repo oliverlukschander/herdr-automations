@@ -245,3 +245,32 @@ func TestRequireRunnableWritesWhatWasChecked(t *testing.T) {
 		t.Error("written anyway")
 	}
 }
+
+// Review round 2, finding 2: the second of two entries named x is listed
+// invalid with its own text; applying that text by name replaced the first,
+// good one. Now nothing by that name is edited (finding 4: nor deleted or
+// renamed), and the refusal names both lines.
+func TestFixingADuplicateByNameIsRefused(t *testing.T) {
+	raw := "automations:\n  - name: x\n    cron: \"@daily\"\n    repo: /good\n    prompt: keep me\n" +
+		"  - name: x\n    cron: \"@daily\"\n    repo: /dup\n    prompt: p\n"
+	sandbox(t, raw)
+	list, err := List(time.Now())
+	if err != nil || len(list.Invalid) != 1 {
+		t.Fatal(err)
+	}
+	attempts := map[string]error{}
+	_, attempts["apply its own yaml"] = Apply([]byte(list.Invalid[0].YAML), ApplyOptions{}, time.Now())
+	_, attempts["rename"] = Apply([]byte("name: y\ncron: \"@daily\"\nrepo: /y\nprompt: p\n"), ApplyOptions{RenameFrom: "x"}, time.Now())
+	_, attempts["delete"] = Delete("x", "")
+	_, attempts["pause"] = SetPaused("x", true, "", time.Now())
+	for what, err := range attempts {
+		var f *Failure
+		if !errors.As(err, &f) || f.Code != CodeInvalid || len(f.Diagnostics) != 2 ||
+			f.Diagnostics[0].Line != 2 || f.Diagnostics[1].Line != 6 || !strings.Contains(f.Message, "lines 2, 6") {
+			t.Errorf("%s: %+v", what, err)
+		}
+	}
+	if fileNow(t) != raw {
+		t.Errorf("written anyway:\n%s", fileNow(t))
+	}
+}

@@ -94,6 +94,9 @@ func Delete(name, ifMatch string) (*DeleteResult, error) {
 		if it == nil || name == "" { // an entry without a name cannot be told apart from another
 			return config.Edit{}, &config.NotFoundError{Name: name}
 		}
+		if err := f.Single(name); err != nil {
+			return config.Edit{}, err
+		}
 		raw, err := f.Remove(*it)
 		return config.Edit{Raw: raw, Touched: []string{name}}, err
 	})
@@ -141,6 +144,11 @@ func Apply(body []byte, o ApplyOptions, now time.Time) (*ApplyResult, error) {
 		target = o.RenameFrom
 	}
 	edit := func(f *config.File) (config.Edit, error) {
+		// By name, an edit of a name declared twice would land on the first
+		// of them, whichever was meant.
+		if err := f.Single(target); err != nil {
+			return config.Edit{}, err
+		}
 		it := f.Item(target)
 		switch {
 		case o.RenameFrom != "" && it == nil:
@@ -236,6 +244,7 @@ func failure(err error) error {
 		conflict *config.ConflictError
 		refused  *config.RefusedError
 		notFound *config.NotFoundError
+		dup      *config.DuplicateError
 	)
 	switch {
 	case errors.As(err, &f):
@@ -252,6 +261,13 @@ func failure(err error) error {
 		return f
 	case errors.As(err, &notFound):
 		return Fail(CodeNotFound, "%v", err)
+	case errors.As(err, &dup):
+		f := Fail(CodeInvalid, "%v", err)
+		for _, l := range dup.Lines {
+			f.Diagnostics = append(f.Diagnostics, Diagnostic{Name: str(dup.Name), Line: l,
+				Message: fmt.Sprintf("%s: declared here too", dup.Name)})
+		}
+		return f
 	case errors.Is(err, config.ErrLocked):
 		return Fail(CodeLocked, "%v", err)
 	case errors.Is(err, config.ErrNotSpliceable), errors.As(err, new(*config.UnreadableError)):
