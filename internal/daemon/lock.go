@@ -1,12 +1,14 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/DnzzL/herdr-automations/internal/config"
 )
@@ -26,15 +28,24 @@ func acquireLock() (release func(), err error) {
 	if err := os.MkdirAll(config.StateDir(), 0o755); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(config.StateDir(), "daemon.pid")
+	path := pidPath()
 
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("another daemon is already running (pid %s)", holderPID(path))
+	// Probe takes the lock shared for a moment. A daemon that started in that
+	// moment and gave up at once would take the probe for a second daemon, and
+	// nothing runs the startup hook again — so it asks for a while first.
+	for deadline := time.Now().Add(lockWait); ; time.Sleep(lockPoll) {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) || time.Now().After(deadline) {
+			f.Close()
+			return nil, fmt.Errorf("another daemon is already running (pid %s)", holderPID(path))
+		}
 	}
 
 	if err := f.Truncate(0); err != nil {
@@ -50,6 +61,49 @@ func acquireLock() (release func(), err error) {
 		os.Remove(path)
 		releaseFile(f)
 	}, nil
+}
+
+// lockWait is how long a starting daemon keeps asking for a lock somebody
+// holds; far longer than a Probe holds it, far shorter than any real daemon.
+const (
+	lockWait = 2 * time.Second
+	lockPoll = 50 * time.Millisecond
+)
+
+func pidPath() string { return filepath.Join(config.StateDir(), "daemon.pid") }
+
+// Status is what Probe found out about the scheduler on this machine.
+type Status struct {
+	Running bool
+	// PID is what the pidfile says, when a daemon holds it.
+	PID int
+	// Since is when that daemon took the lock: the pidfile is written then.
+	Since time.Time
+}
+
+// Probe reports whether a daemon holds the lock, for `list`. It asks the kernel
+// the same question acquireLock does — the pidfile alone proves nothing (see
+// above) — by trying for the lock shared and letting go at once. It never
+// creates the pidfile: no file means no daemon has ever run here.
+func Probe() Status {
+	path := pidPath()
+	f, err := os.Open(path)
+	if err != nil {
+		return Status{}
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err == nil {
+		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		return Status{}
+	} else if !errors.Is(err, syscall.EWOULDBLOCK) {
+		return Status{}
+	}
+	st := Status{Running: true}
+	st.PID, _ = strconv.Atoi(holderPID(path))
+	if info, err := f.Stat(); err == nil {
+		st.Since = info.ModTime()
+	}
+	return st
 }
 
 // releaseFile drops the flock. Closing the descriptor would be enough, but
