@@ -23,9 +23,12 @@ its own runner, under the run ID the CLI already handed back.
 - No daemon means an error and nothing written. A request with nobody to take it would fire whenever a daemon
   next started, which is a queue by another name.
 - The PID comes from the pidfile whose flock a daemon holds (`Probe`). The pidfile's second line, `requests`,
-  says the daemon handles SIGUSR1. One from before this ADR would die of the signal, so it is never sent one.
+  says the daemon takes requests. One from before this ADR ignores SIGUSR1 (a Go program drops signals it does
+  not listen for) and never reads `requests/`. A request for it would only ever end as `missed`, so the CLI
+  answers `daemon_not_running` ("try again after the upgrade") instead of writing one.
 - The daemon installs its SIGUSR1 handler before it takes the lock. Until then nobody can see it as running, so
-  nobody signals it.
+  no wake-up is lost. (Corrected 2026-10-24 after review: an earlier version of this ADR said an old daemon
+  would die of the signal. It would not.)
 
 `run <name>` without `--detach` is unchanged, for a terminal that stays open.
 

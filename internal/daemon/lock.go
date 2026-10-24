@@ -76,8 +76,10 @@ const (
 func pidPath() string { return filepath.Join(config.StateDir(), "daemon.pid") }
 
 // takesRequests is the pidfile's second line: this daemon handles SIGUSR1 by
-// taking run-now requests. One from before that dies of the signal instead,
-// and `run --detach` must not send it one.
+// taking run-now requests. One from before ignores the signal (Go drops
+// signals nobody listens for) and never reads requests, so `run --detach`
+// tells the app to wait for its upgrade rather than queue a request nobody
+// will take.
 const takesRequests = "requests"
 
 // Status is what Probe found out about the scheduler on this machine.
