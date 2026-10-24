@@ -1,5 +1,8 @@
 // Package wizard implements `herdr-automations add`: a plain stdin Q&A that
 // appends a validated entry to automations.yaml and previews the next runs.
+// The entry is added the way every other write works (config.Change): the
+// file read afresh under the lock, its own lines appended, every other byte
+// kept, so a broken entry elsewhere no longer stands in the way.
 package wizard
 
 import (
@@ -10,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/DnzzL/herdr-automations/internal/config"
 	"github.com/DnzzL/herdr-automations/internal/schedule"
 )
@@ -19,16 +24,6 @@ func Run() error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
-	}
-	// Say so now rather than after twenty questions: appending means rewriting
-	// the file, and the file is not currently something we can rewrite without
-	// losing an entry.
-	if len(cfg.Invalid) > 0 {
-		fmt.Printf("%s has entries that did not load:\n", config.Path())
-		for _, d := range cfg.Invalid {
-			fmt.Printf("  %s\n", d)
-		}
-		return fmt.Errorf("fix those first — adding an entry rewrites the file")
 	}
 
 	name := ask(in, "Name (kebab-case)", "")
@@ -102,27 +97,59 @@ func Run() error {
 		timeout = 60
 	}
 
-	cfg.Automations = append(cfg.Automations, config.Automation{
+	if err := add(config.Automation{
 		Name: name, Cron: cronExpr, Repo: repo,
 		Workspace: config.Workspace(workspace), WorkspaceID: workspaceID,
 		Agent: agent, Model: model,
 		Prompt: prompt, Workflow: workflow,
 		MCPConfig: mcp, TimeoutMinutes: timeout,
-	})
-	if err := config.Save(cfg); err != nil {
+	}); err != nil {
 		return err
-	}
-	// Re-load to run full validation on what we just wrote.
-	written, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("saved, but %s no longer parses: %w", config.Path(), err)
-	}
-	if d := written.Diagnostic(name); d != nil {
-		return fmt.Errorf("saved, but it will not run — fix %s", d)
 	}
 	fmt.Printf("\nSaved %q to %s\nThe daemon picks it up within 30s. Test it now with: herdr-automations run %s\n",
 		name, config.Path(), name)
 	return nil
+}
+
+// add appends a as a new entry. The file is read again under the lock, not
+// taken from before the questions: another writer may have saved meanwhile,
+// and writing the old copy back would undo that. The entry must load, or
+// nothing is written.
+func add(a config.Automation) error {
+	pairs := []config.Pair{field("name", a.Name), field("cron", a.Cron), field("repo", a.Repo),
+		field("workspace", string(a.Workspace))}
+	optional := []config.Pair{field("workspace_id", a.WorkspaceID), field("agent", a.Agent),
+		field("model", a.Model), field("prompt", a.Prompt), field("workflow", a.Workflow), field("mcp_config", a.MCPConfig)}
+	for _, p := range optional {
+		if p.Value.Value != "" {
+			pairs = append(pairs, p)
+		}
+	}
+	pairs = append(pairs, config.Pair{Key: "timeout_minutes",
+		Value: &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.Itoa(a.TimeoutMinutes)}})
+	text, err := config.NewEntryText(pairs)
+	if err != nil {
+		return err
+	}
+	want := map[string]any{}
+	if err := yaml.Unmarshal([]byte(text), &want); err != nil {
+		return err
+	}
+	_, _, err = config.Change("", false, func(f *config.File) (config.Edit, error) {
+		// Declares, not Find: an existing entry that is currently broken is
+		// still an existing entry, and a second one by the same name makes
+		// both invalid.
+		if f.Declares(a.Name) {
+			return config.Edit{}, fmt.Errorf("automation %q already exists", a.Name)
+		}
+		raw, err := f.Append(text)
+		return config.Edit{Raw: raw, Touched: []string{a.Name}, MustLoad: []string{a.Name}, Entry: a.Name, Want: want}, err
+	})
+	return err
+}
+
+func field(key, value string) config.Pair {
+	return config.Pair{Key: key, Value: &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}}
 }
 
 func ask(in *bufio.Reader, label, def string) string {

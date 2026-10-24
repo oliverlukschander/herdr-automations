@@ -39,3 +39,7 @@ Line numbers come from decoding through `yaml.Node`. They also retired
   `herdr-automations add` silently eat an automation with a typo in it. Caught in
   review; the fix is a refusal rather than round-tripping raw nodes, because a
   broken entry is something you want to fix before adding another anyway.
+- *Superseded (GAI-1075, 2026-10-24):* `Save` is gone. Every write, the wizard's
+  included, goes through `config.Change`, which replaces one entry's lines and
+  refuses unless every other entry, broken ones included, comes out exactly as
+  it went in. A broken entry no longer blocks writing another.
