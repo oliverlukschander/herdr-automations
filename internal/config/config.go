@@ -204,30 +204,89 @@ func Path() string { return filepath.Join(Dir(), "automations.yaml") }
 // short of that is a Diagnostic on Config.Invalid, and the entries that did
 // load still run.
 func Load() (*Config, error) {
+	f, err := Read()
+	if err != nil {
+		return nil, err
+	}
+	return f.Config, nil
+}
+
+// File is automations.yaml as read: the Config it loads to, plus the text and
+// where each entry sits in it, so a writer can change one entry and leave every
+// other byte alone.
+type File struct {
+	*Config
+	Raw    []byte
+	Exists bool
+	// Items are the entries in file order, the ones that did not load included.
+	Items []Item
+	// dash is the 0-based column of the sequence's dashes, or -1 when the
+	// automations are not a block sequence and have no lines of their own.
+	dash int
+}
+
+// Item is one entry of the automations sequence, valid or not.
+type Item struct {
+	// Name is the entry's name, or empty when even that could not be read.
+	Name string
+	// Line is where the entry's first key sits, 1-based: the same number its
+	// Automation or Diagnostic carries.
+	Line int
+	node *yaml.Node
+	// first and last are the 0-based lines the entry occupies: its own leading
+	// comments included, the blank lines around it not. -1 when the sequence
+	// is not a block sequence.
+	first, last int
+}
+
+// Decode decodes the entry as written, without defaults or validation.
+func (it Item) Decode(v any) error { return it.node.Decode(v) }
+
+// Read reads and loads automations.yaml. See Load for what counts as an error.
+func Read() (*File, error) {
 	raw, err := os.ReadFile(Path())
 	if os.IsNotExist(err) {
-		return &Config{}, nil
+		return &File{Config: &Config{}, dash: -1}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	f, err := parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	f.Exists = true
+	return f, nil
+}
+
+// parse loads a config from its text.
+func parse(raw []byte) (*File, error) {
 	// Decoding through yaml.Node rather than straight into Config is what buys
 	// the line numbers: a diagnostic that cannot say where to look is only
 	// marginally better than silence.
 	var doc struct {
-		Automations []yaml.Node `yaml:"automations"`
+		Automations yaml.Node `yaml:"automations"`
 	}
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", Path(), err)
 	}
+	seq := &doc.Automations
+	f := &File{Config: &Config{}, Raw: raw, dash: -1}
+	switch {
+	case seq.Kind == 0, seq.Kind == yaml.ScalarNode && seq.Tag == "!!null":
+		return f, nil // no automations yet
+	case seq.Kind != yaml.SequenceNode:
+		return nil, fmt.Errorf("parse %s: line %d: automations must be a list", Path(), seq.Line)
+	}
 
-	cfg := &Config{}
+	cfg := f.Config
 	seen := map[string]bool{}
-	for _, node := range doc.Automations {
+	for _, node := range seq.Content {
+		f.Items = append(f.Items, Item{Name: nameOf(*node), Line: node.Line, node: node})
 		var a Automation
 		if err := node.Decode(&a); err != nil {
 			cfg.Invalid = append(cfg.Invalid, Diagnostic{
-				Name: nameOf(node), Line: node.Line, Message: cleanYAMLError(err),
+				Name: nameOf(*node), Line: node.Line, Message: cleanYAMLError(err),
 			})
 			continue
 		}
@@ -252,7 +311,8 @@ func Load() (*Config, error) {
 		seen[a.Name] = true
 		cfg.Automations = append(cfg.Automations, a)
 	}
-	return cfg, nil
+	f.locate(seq)
+	return f, nil
 }
 
 // nameOf recovers just the name from an entry too malformed to decode whole,
