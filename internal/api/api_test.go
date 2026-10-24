@@ -198,3 +198,52 @@ func TestHistoryOfOneRunIsItsTimeline(t *testing.T) {
 		t.Errorf("unknown run = %v", out)
 	}
 }
+
+// Oliver's call: an invalid record (written while the entry could not be read)
+// is hidden from last_run once the entry loads again, in list and show alike,
+// and stays in history.
+func TestAStaleInvalidRecordIsNotTheLastRun(t *testing.T) {
+	sandbox(t, `automations:
+  - {name: fixed, cron: "@daily", repo: /x, prompt: p}
+  - {name: never, cron: "@daily", repo: /x, prompt: p}
+`)
+	base := time.Now().Add(-time.Hour)
+	done := history.NewID("fixed", "")
+	for _, r := range []history.Record{
+		{RunID: done, Automation: "fixed", Status: history.StatusDone, At: base, Trigger: history.TriggerCron},
+		{RunID: history.NewID("fixed", "invalid"), Automation: "fixed", Status: history.StatusInvalid, At: base.Add(time.Minute), Error: "bad cron"},
+		{RunID: history.NewID("never", "invalid"), Automation: "never", Status: history.StatusInvalid, At: base, Error: "bad cron"},
+	} {
+		if err := history.Append(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	res, err := List(time.Now())
+	out, _ := emitted(t, res, err)
+	autos := out["automations"].([]any)
+	if run, _ := autos[0].(map[string]any)["last_run"].(map[string]any); run["run_id"] != done {
+		t.Errorf("list: fixed last_run = %v, want the done run", run)
+	}
+	if run := autos[1].(map[string]any)["last_run"]; run != nil {
+		t.Errorf("list: never last_run = %v, want null", run)
+	}
+
+	for name, want := range map[string]any{"fixed": done, "never": nil} {
+		res, err := Show(name, time.Now())
+		out, _ := emitted(t, res, err)
+		var got any
+		if run, ok := out["automation"].(map[string]any)["last_run"].(map[string]any); ok {
+			got = run["run_id"]
+		}
+		if got != want {
+			t.Errorf("show %s: last_run run_id = %v, want %v", name, got, want)
+		}
+	}
+
+	hres, err := History("fixed", 0)
+	hout, _ := emitted(t, hres, err)
+	if runs := hout["runs"].([]any); len(runs) != 2 || runs[0].(map[string]any)["status"] != "invalid" {
+		t.Errorf("history fixed = %v, want the invalid record kept", runs)
+	}
+}

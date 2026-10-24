@@ -160,12 +160,33 @@ const lateWrite = time.Minute
 // scan stops at the first record older than any run that could still displace
 // one of them.
 func Runs(automation string, limit int) ([]Record, error) {
+	return runs(limit, func(r Record) bool { return automation == "" || r.Automation == automation })
+}
+
+// LastRun is the automation's last run as Latest counts it, or nil when it
+// never ran. It reads backwards like Runs, so show stays a recent read.
+func LastRun(automation string) (*Record, error) {
+	out, err := runs(1, func(r Record) bool { return r.Automation == automation && countsAsLastRun(r) })
+	if err != nil || len(out) == 0 {
+		return nil, err
+	}
+	return &out[0], nil
+}
+
+// countsAsLastRun reports whether r can be what the views show as an
+// automation's last run. An invalid record is the daemon saying it could not
+// read the entry; once the entry loads again it would show a fixed entry as
+// broken. The record stays in the log and in history.
+func countsAsLastRun(r Record) bool { return r.Status != StatusInvalid }
+
+// runs is Runs over the records keep accepts.
+func runs(limit int, keep func(Record) bool) ([]Record, error) {
 	latest := map[string]Record{}
 	start := map[string]time.Time{}
 	var ids []string
 	var floor time.Time
 	err := backward(func(r Record) bool {
-		if automation != "" && r.Automation != automation {
+		if !keep(r) {
 			return true
 		}
 		if limit > 0 && len(ids) >= limit && r.At.Before(floor.Add(-lateWrite)) {
@@ -211,8 +232,9 @@ func newestStarts(ids []string, start map[string]time.Time) []time.Time {
 }
 
 // Latest returns, for every automation in the log, the latest record of its
-// newest run. It is one pass over the whole file, where asking per automation
-// was one pass each — and the board asks every two seconds.
+// newest run, invalid records left out (countsAsLastRun). It is one pass over
+// the whole file, where asking per automation was one pass each — and the
+// board asks every two seconds.
 func Latest() (map[string]Record, error) {
 	f, err := os.Open(path())
 	if os.IsNotExist(err) {
@@ -232,6 +254,9 @@ func Latest() (map[string]Record, error) {
 		var r Record
 		if json.Unmarshal(sc.Bytes(), &r) != nil {
 			continue // tolerate a torn write rather than losing the file
+		}
+		if !countsAsLastRun(r) {
+			continue
 		}
 		if _, seen := latest[r.RunID]; !seen {
 			// Begun when its ID says, as Runs orders them: a run-now request

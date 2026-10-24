@@ -233,10 +233,7 @@ func Apply(body []byte, o ApplyOptions, now time.Time) (*ApplyResult, error) {
 
 // viewOf is the Automation view of one entry, its last run included.
 func viewOf(f *config.File, a config.Automation, now time.Time) (Automation, error) {
-	var last *history.Record
-	if runs, err := history.Runs(a.Name, 1); err == nil && len(runs) > 0 {
-		last = &runs[0]
-	}
+	last, _ := history.LastRun(a.Name)
 	return automationOf(f, a, last, now)
 }
 

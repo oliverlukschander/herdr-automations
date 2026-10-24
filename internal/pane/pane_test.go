@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -207,5 +208,28 @@ func TestANoticeIsFlattenedToOneLine(t *testing.T) {
 
 	if strings.Contains(m.notice, "\n") {
 		t.Errorf("notice = %q, want it on one line", m.notice)
+	}
+}
+
+// An invalid record from while an entry was broken is not its last run once it
+// loads again; an entry that is broken now still shows invalid from its
+// diagnostic.
+func TestAFixedEntryDoesNotShowItsOldInvalidRecord(t *testing.T) {
+	board(t, oneGoodOneBroken)
+	at := time.Now().Add(-time.Hour)
+	for _, r := range []history.Record{
+		{RunID: history.NewID("fine", "invalid"), Automation: "fine", Status: history.StatusInvalid, At: at, Error: "bad cron"},
+		{RunID: history.NewID("broken", "invalid"), Automation: "broken", Status: history.StatusInvalid, At: at, Error: "bad hour"},
+	} {
+		if err := history.Append(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := load()
+	if got := m.rows[0].status(); got != "never" {
+		t.Errorf("fine = %q, want never", got)
+	}
+	if got := m.rows[1].status(); got != string(history.StatusInvalid) {
+		t.Errorf("broken = %q, want invalid", got)
 	}
 }

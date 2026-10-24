@@ -205,3 +205,35 @@ func TestLatestAndRunsAgreeWhenTheLogIsOutOfOrder(t *testing.T) {
 		t.Errorf("Runs says %s, Latest says %s; want %s", runs[0].RunID, latest["a"].RunID, later)
 	}
 }
+
+// An invalid record is the daemon saying it could not read an entry. Once the
+// entry loads again, that record must not be its last run: list and the board
+// would show a fixed entry as broken. It stays in the log.
+func TestAnInvalidRecordIsNotALastRun(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	base := time.Now().Add(-time.Hour)
+	done, broke := idAt("fixed", base), idAt("fixed-invalid", base.Add(time.Minute))
+	appendAll(t,
+		Record{RunID: done, Automation: "fixed", Status: StatusDone, At: base},
+		Record{RunID: broke, Automation: "fixed", Status: StatusInvalid, At: base.Add(time.Minute), Error: "bad cron"},
+		Record{RunID: idAt("only-invalid", base), Automation: "only", Status: StatusInvalid, At: base, Error: "bad cron"},
+	)
+
+	latest, err := Latest()
+	if err != nil || latest["fixed"].RunID != done {
+		t.Errorf("Latest()[fixed] = %+v, %v; want the done run", latest["fixed"], err)
+	}
+	if r, ok := latest["only"]; ok {
+		t.Errorf("Latest()[only] = %+v, want none: it never ran", r)
+	}
+	if last, err := LastRun("fixed"); err != nil || last == nil || last.RunID != done {
+		t.Errorf("LastRun(fixed) = %+v, %v; want the done run", last, err)
+	}
+	if last, err := LastRun("only"); err != nil || last != nil {
+		t.Errorf("LastRun(only) = %+v, %v; want nil", last, err)
+	}
+	// History still has every record.
+	if runs, _ := Runs("fixed", 0); len(runs) != 2 || runs[0].RunID != broke {
+		t.Errorf("Runs(fixed) = %+v, want the invalid record first, then the done run", runs)
+	}
+}
