@@ -251,6 +251,16 @@ func (Client) AgentWait(target string, timeout time.Duration) error {
 		"--timeout", fmt.Sprintf("%d", timeout.Milliseconds()))
 }
 
+// WorkspaceExists reports whether a workspace ID names an open workspace in
+// this Herdr: what an automation in existing mode needs before it can run here.
+func (Client) WorkspaceExists(id string) (bool, error) {
+	err := run(nil, "workspace", "get", id)
+	if HasCode(err, CodeWorkspaceGone) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // ErrGone means the run's workspace no longer exists — the expected outcome
 // once you've reviewed and closed it, not a failure worth a stack trace.
 var ErrGone = errors.New("workspace already closed")

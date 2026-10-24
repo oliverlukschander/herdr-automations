@@ -25,11 +25,11 @@ func repoWithBranches(t *testing.T) string {
 		{"-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--allow-empty", "-m", "work"},
 		{"checkout", "main"},
 	}
-	// Through gitCommand: with a plain `git -C`, an inherited GIT_DIR (`git
+	// Through GitCommand: with a plain `git -C`, an inherited GIT_DIR (`git
 	// rebase --exec` sets one) made this script re-initialise the real
 	// repository (core.bare = true), branch in it and move its HEAD.
 	for _, args := range script {
-		if out, err := gitCommand(dir, args...).CombinedOutput(); err != nil {
+		if out, err := GitCommand(dir, args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
@@ -76,11 +76,11 @@ func TestVerdict(t *testing.T) {
 func TestGitActsOnTheRepoItIsGivenWhateverGitDirSays(t *testing.T) {
 	repo := repoWithBranches(t)
 	decoy := repoWithBranches(t)
-	if out, err := gitCommand(decoy, "branch", "-D", "auto/did-nothing").CombinedOutput(); err != nil {
+	if out, err := GitCommand(decoy, "branch", "-D", "auto/did-nothing").CombinedOutput(); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	wt := filepath.Join(t.TempDir(), "wt")
-	if out, err := gitCommand(repo, "worktree", "add", wt, "auto/did-nothing").CombinedOutput(); err != nil {
+	if out, err := GitCommand(repo, "worktree", "add", wt, "auto/did-nothing").CombinedOutput(); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	t.Setenv("GIT_DIR", filepath.Join(decoy, ".git"))
@@ -94,10 +94,10 @@ func TestGitActsOnTheRepoItIsGivenWhateverGitDirSays(t *testing.T) {
 	if err := r.Remove(Candidate{Repo: repo, Branch: "auto/did-nothing", Path: wt}); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	if gitCommand(repo, "rev-parse", "--verify", "--quiet", "auto/did-nothing").Run() == nil {
+	if GitCommand(repo, "rev-parse", "--verify", "--quiet", "auto/did-nothing").Run() == nil {
 		t.Error("the branch is still in repo")
 	}
-	if gitCommand(decoy, "rev-parse", "--verify", "--quiet", "auto/did-work").Run() != nil {
+	if GitCommand(decoy, "rev-parse", "--verify", "--quiet", "auto/did-work").Run() != nil {
 		t.Error("the decoy lost a branch")
 	}
 }

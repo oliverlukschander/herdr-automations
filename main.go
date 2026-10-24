@@ -34,8 +34,13 @@ Usage:
   herdr-automations add              Interactive wizard: create an automation
   herdr-automations list [--json]    List automations with schedule and last run
   herdr-automations run <name>       Trigger an automation now
-  herdr-automations pause <name>     Stop scheduling an automation
-  herdr-automations resume <name>    Resume a paused automation
+  herdr-automations pause <name>     Stop scheduling an automation (--if-match SHA, --json)
+  herdr-automations resume <name>    Resume a paused automation (--if-match SHA, --json)
+  herdr-automations show <name>      Print an automation as written in automations.yaml
+  herdr-automations apply            Create or replace one automation from stdin (YAML or JSON)
+                                     [--dry-run] [--new] [--rename-from OLD] [--patch JSON]
+                                     [--require-runnable] [--if-match SHA] [--json]
+  herdr-automations delete <name>    Remove an automation (--if-match SHA, --json)
   herdr-automations history [name] [--limit N] [--run ID] [--json]
                                      Show recent runs and action reports
   herdr-automations report --file PATH --action yes|no --summary TEXT
@@ -74,6 +79,12 @@ func main() {
 		err = pauseCmd(os.Args[2:], true)
 	case "resume":
 		err = pauseCmd(os.Args[2:], false)
+	case "show":
+		err = showCmd(os.Args[2:])
+	case "apply":
+		err = applyCmd(os.Args[2:])
+	case "delete":
+		err = deleteCmd(os.Args[2:])
 	case "history":
 		err = historyCmd(os.Args[2:])
 	case "pane":
@@ -334,30 +345,137 @@ func runCmd(args []string) error {
 // pauseCmd toggles Disabled on a single automation and persists it. It shares
 // the config's own guardrail: Save refuses while any entry in the file failed
 // to load, so a broken sibling entry blocks this too.
-func pauseCmd(args []string, disabled bool) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: herdr-automations %s <name>", map[bool]string{true: "pause", false: "resume"}[disabled])
+// oneName parses a subcommand that takes exactly one automation name.
+func oneName(cmd string, args []string, fs *flag.FlagSet) (string, error) {
+	rest, err := parseArgs(fs, args)
+	if err == nil && len(rest) != 1 {
+		err = fmt.Errorf("usage: herdr-automations %s <name>", cmd)
 	}
-	cfg, err := config.Load()
+	if err != nil {
+		return "", err
+	}
+	return rest[0], nil
+}
+
+// pauseCmd changes only the entry's disabled: line, so a hand-written file
+// keeps its comments. A broken sibling entry no longer blocks it: other
+// entries come out exactly as they went in, or nothing is written.
+func pauseCmd(args []string, disabled bool) error {
+	cmd := map[bool]string{true: "pause", false: "resume"}[disabled]
+	fs, asJSON := newFlags(cmd, args)
+	ifMatch := fs.String("if-match", "", "refuse unless automations.yaml still has this sha256")
+	name, err := oneName(cmd, args, fs)
+	if asJSON {
+		if err != nil {
+			emit(nil, usageError(err))
+		}
+		emit(api.SetPaused(name, disabled, *ifMatch, time.Now()))
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	a := cfg.Find(args[0])
-	if a == nil {
-		if d := cfg.Diagnostic(args[0]); d != nil {
-			return fmt.Errorf("%s did not load: %s", args[0], d)
-		}
-		return fmt.Errorf("no automation named %q", args[0])
-	}
-	a.Disabled = disabled
-	if err := config.Save(cfg); err != nil {
+	changed, _, _, err := config.SetDisabled(name, disabled, *ifMatch)
+	if err != nil {
 		return err
 	}
-	verb := "Resumed"
-	if disabled {
-		verb = "Paused"
+	verb := map[bool]string{true: "Paused", false: "Resumed"}[disabled]
+	if !changed {
+		verb = "Already " + strings.ToLower(verb)
 	}
-	fmt.Printf("%s %s\n", verb, a.Name)
+	fmt.Printf("%s %s\n", verb, name)
+	return nil
+}
+
+func showCmd(args []string) error {
+	fs, asJSON := newFlags("show", args)
+	name, err := oneName("show", args, fs)
+	if asJSON {
+		if err != nil {
+			emit(nil, usageError(err))
+		}
+		emit(api.Show(name, time.Now()))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	res, err := api.Show(name, time.Now())
+	if err != nil {
+		return err
+	}
+	fmt.Print(res.YAML)
+	return nil
+}
+
+func applyCmd(args []string) error {
+	fs, asJSON := newFlags("apply", args)
+	var o api.ApplyOptions
+	fs.BoolVar(&o.DryRun, "dry-run", false, "validate and run the checks, write nothing")
+	fs.BoolVar(&o.New, "new", false, "refuse if an automation by that name exists")
+	fs.BoolVar(&o.RequireRunnable, "require-runnable", false, "refuse unless this machine passes the checks")
+	fs.StringVar(&o.RenameFrom, "rename-from", "", "replace the automation of this name (the body may rename it)")
+	fs.StringVar(&o.IfMatch, "if-match", "", "refuse unless automations.yaml still has this sha256")
+	fs.StringVar(&o.Patch, "patch", "", "JSON object of keys to set on the body (null removes one)")
+	rest, err := parseArgs(fs, args)
+	if err == nil && len(rest) > 0 {
+		err = fmt.Errorf("apply reads the automation from stdin and takes no names")
+	}
+	if asJSON {
+		if err != nil {
+			emit(nil, usageError(err))
+		}
+		body, readErr := io.ReadAll(os.Stdin)
+		if readErr != nil {
+			emit(nil, readErr)
+		}
+		emit(api.Apply(body, o, time.Now()))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	body, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return err
+	}
+	res, err := api.Apply(body, o, time.Now())
+	if err != nil {
+		return err
+	}
+	verb := map[string]string{"created": "Created", "replaced": "Replaced", "renamed": "Renamed", "unchanged": "Unchanged"}[res.Action]
+	if o.DryRun {
+		verb = "Would be " + strings.ToLower(verb)
+	}
+	fmt.Printf("%s %s\n", verb, res.Automation.Name)
+	for _, c := range res.Checks {
+		mark := "ok  "
+		if !c.OK {
+			mark = map[string]string{"error": "FAIL", "warning": "warn"}[c.Level]
+		}
+		fmt.Printf("  %s %-18s %s\n", mark, c.ID, c.Message)
+	}
+	return nil
+}
+
+func deleteCmd(args []string) error {
+	fs, asJSON := newFlags("delete", args)
+	ifMatch := fs.String("if-match", "", "refuse unless automations.yaml still has this sha256")
+	name, err := oneName("delete", args, fs)
+	if asJSON {
+		if err != nil {
+			emit(nil, usageError(err))
+		}
+		emit(api.Delete(name, *ifMatch))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := api.Delete(name, *ifMatch); err != nil {
+		return err
+	}
+	fmt.Printf("Deleted %s\n", name)
 	return nil
 }
 
