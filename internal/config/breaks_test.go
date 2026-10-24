@@ -308,3 +308,41 @@ func TestACommentClosingAnEntrySurvivesPauseAndResume(t *testing.T) {
 		t.Errorf("pause then resume changed the file:\n%s", got)
 	}
 }
+
+// Review round 2, finding 3: a |+ value at the very end of the file made the
+// entry, and so every append, impossible to edit; deleting the entry after
+// such a value was refused.
+func TestAKeptBlockAtTheEndOfTheFile(t *testing.T) {
+	onDisk(t, "automations:\n  - name: a\n    cron: \"@daily\"\n    repo: /x\n    prompt: |+\n      text\n\n")
+	_, _, after, err := SetDisabled("a", true, "")
+	if err != nil || after.Find("a").Prompt != "text\n\n" {
+		t.Fatalf("pause: %v", err)
+	}
+
+	onDisk(t, "automations:\n  - name: a\n    cron: \"@daily\"\n    repo: /x\n    prompt: |+\n      text\n\n"+
+		"  - name: b\n    cron: \"@daily\"\n    repo: /x\n    prompt: p\n")
+	_, after, err = Change("", false, func(f *File) (Edit, error) {
+		raw, err := f.Remove(*f.Item("b"))
+		return Edit{Raw: raw, Touched: []string{"b"}}, err
+	})
+	if err != nil || after.Find("a").Prompt != "text\n\n" || after.Item("b") != nil {
+		t.Fatalf("delete b: %v", err)
+	}
+}
+
+// Review round 2, finding 5: appending needs only where the last entry ends,
+// not that the entry could be edited itself; one using an anchor from
+// elsewhere cannot.
+func TestAppendingAfterAnEntryThatCannotBeEdited(t *testing.T) {
+	onDisk(t, "defaults: &d\n  repo: /x\nautomations:\n  - name: a\n    cron: \"@daily\"\n    <<: *d\n    prompt: p\n")
+	_, after, err := Change("", false, func(f *File) (Edit, error) {
+		if f.Item("a").first >= 0 {
+			t.Fatal("an entry merging an anchor from elsewhere should not be editable line by line")
+		}
+		raw, err := f.Append("name: b\ncron: \"@daily\"\nrepo: /y\nprompt: p\n")
+		return Edit{Raw: raw, Touched: []string{"b"}, MustLoad: []string{"b"}}, err
+	})
+	if err != nil || after.Find("b") == nil || after.Find("a").Repo != "/x" {
+		t.Fatalf("append: %v", err)
+	}
+}

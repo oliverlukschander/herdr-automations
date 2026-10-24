@@ -55,18 +55,21 @@ func (f *File) Replace(it Item, text string) ([]byte, error) {
 func (f *File) Append(text string) ([]byte, error) {
 	lines, nl := f.lines, newline(f.lines)
 	if n := len(f.Items); n > 0 {
+		// Appending needs only where the last entry ends, not that the entry
+		// itself could be edited here (one using an anchor from elsewhere
+		// cannot). Change still holds that entry to its structure.
 		last := f.Items[n-1]
-		if last.first < 0 {
+		if last.end < 0 {
 			return nil, ErrNotSpliceable
 		}
 		insert := entryLines(text, f.dash, keyCol(last, f.dash), nl)
 		if n > 1 {
-			if prev := f.Items[n-2]; prev.first >= 0 &&
-				slices.ContainsFunc(lines[prev.last+1:last.first], func(l line) bool { return blank(l.text) }) {
+			if prev := f.Items[n-2]; prev.end >= 0 && prev.end < last.end &&
+				slices.ContainsFunc(lines[prev.end+1:dashLine(lines, last.node.Line-1, f.dash)], func(l line) bool { return blank(l.text) }) {
 				insert = append([]line{{"", nl}}, insert...)
 			}
 		}
-		return joinLines(ended(lines[:last.last+1], nl), insert, lines[last.last+1:]), nil
+		return joinLines(ended(lines[:last.end+1], nl), insert, lines[last.end+1:]), nil
 	}
 
 	insert := entryLines(text, 2, 4, nl)

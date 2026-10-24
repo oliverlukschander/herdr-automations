@@ -251,9 +251,13 @@ type Item struct {
 	Line int
 	node *yaml.Node
 	// first and last are the 0-based lines the entry occupies: its own leading
-	// comments included, the blank lines around it not. -1 when the sequence
-	// is not a block sequence.
+	// comments included, the blank lines around it not. -1 when the entry
+	// cannot be edited line by line (see locate).
 	first, last int
+	// end is the last line the entry was found to reach, kept even when it
+	// cannot be edited: appending after it needs no more than that. -1 when
+	// the list is not a block list.
+	end int
 }
 
 // Decode decodes the entry as written, without defaults or validation.
@@ -326,7 +330,7 @@ func parse(raw []byte) (f *File, err error) {
 	cfg := f.Config
 	seen := map[string]bool{}
 	for _, node := range seq.Content {
-		f.Items = append(f.Items, Item{Name: nameOf(*node), Line: node.Line, node: node})
+		f.Items = append(f.Items, Item{Name: nameOf(*node), Line: node.Line, node: node, first: -1, last: -1, end: -1})
 		var a Automation
 		if err := node.Decode(&a); err != nil {
 			cfg.Invalid = append(cfg.Invalid, Diagnostic{

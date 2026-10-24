@@ -87,11 +87,13 @@ func (f *File) locate(seq *yaml.Node, next int) {
 			}
 		}
 		if keepsTrailing(lines, lastValue(f.Items[i].node)) {
-			for last+1 < bound && blank(lines[last+1].text) {
+			// Its blank lines, but not what is left after the file's final
+			// line break: that ends the file, it adds no line to the value.
+			for last+1 < bound && blank(lines[last+1].text) && lines[last+1].brk != "" {
 				last++
 			}
 		}
-		f.Items[i].last = last
+		f.Items[i].last, f.Items[i].end = last, last
 	}
 	for i := range f.Items {
 		if !f.readsBack(f.Items[i]) {
