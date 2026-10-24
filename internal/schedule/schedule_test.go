@@ -1,6 +1,7 @@
 package schedule
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -308,6 +309,49 @@ func TestACronThatNeverComesDueHasNoNextRun(t *testing.T) {
 	for _, r := range rare {
 		if r.IsZero() {
 			t.Errorf("a zero time among %v", rare)
+		}
+	}
+}
+
+// Review round 3, finding 3: on the night the clocks go back, a daily 02:30
+// matched twice an hour apart and ran twice. A fixed-hour cron comes due
+// once; an hourly one keeps running by real time.
+func TestTheAutumnClockChangeRunsAFixedTimeOnce(t *testing.T) {
+	vienna, err := time.LoadLocation("Europe/Vienna")
+	if err != nil {
+		t.Skip("no zone data:", err)
+	}
+	at := func(s string) time.Time {
+		v, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	fmtAll := func(ts []time.Time) string {
+		var out []string
+		for _, x := range ts {
+			out = append(out, x.In(vienna).Format("01-02 15:04 -07"))
+		}
+		return strings.Join(out, ", ")
+	}
+
+	daily, _ := Upcoming("CRON_TZ=Europe/Vienna 30 2 * * *", at("2026-10-24T12:00:00+02:00"), 3)
+	if got := fmtAll(daily); got != "10-25 02:30 +02, 10-26 02:30 +01, 10-27 02:30 +01" {
+		t.Errorf("daily 02:30 = %s", got)
+	}
+	hourly, _ := Upcoming("CRON_TZ=Europe/Vienna 0 * * * *", at("2026-10-25T01:30:00+02:00"), 3)
+	if got := fmtAll(hourly); got != "10-25 02:00 +02, 10-25 02:00 +01, 10-25 03:00 +01" {
+		t.Errorf("hourly = %s", got)
+	}
+
+	// The scheduler: the 02:30 run has fired; at 02:45, an hour of real time
+	// later in the repeated hour, nothing is due.
+	cfg := &config.Config{Automations: []config.Automation{{Name: "d", Cron: "CRON_TZ=Europe/Vienna 30 2 * * *", CatchUpMinutes: 120}}}
+	res := Plan(cfg, State{LastOccurrence: map[string]time.Time{"d": at("2026-10-25T02:30:00+02:00")}}, at("2026-10-25T02:45:00+01:00"))
+	for _, d := range res.Decisions {
+		if d.Kind == Fire || d.Kind == Missed {
+			t.Errorf("decision in the repeated hour: %+v", d)
 		}
 	}
 }
