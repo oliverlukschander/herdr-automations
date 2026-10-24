@@ -363,3 +363,20 @@ func TestADuplicatedNameIsNotEditedByName(t *testing.T) {
 		t.Error("written anyway")
 	}
 }
+
+// Review round 3, finding 5: what the contract promises for pause then
+// resume. Byte-identical, except that a spelled-out `disabled: false` is
+// gone afterwards: pause turns it into true in place, resume removes the key
+// (absent and false mean the same).
+func TestPauseThenResumeOnASpelledOutFalse(t *testing.T) {
+	raw := "automations:\n  - name: a\n    cron: \"@daily\"\n    repo: /x\n    prompt: p\n    disabled: false\n"
+	onDisk(t, raw)
+	_, _, paused, err := SetDisabled("a", true, "")
+	if err != nil || !strings.Contains(string(paused.Raw), "    disabled: true\n") {
+		t.Fatalf("pause: %v\n%s", err, paused.Raw)
+	}
+	_, _, resumed, err := SetDisabled("a", false, "")
+	if err != nil || string(resumed.Raw) != strings.TrimSuffix(raw, "    disabled: false\n") {
+		t.Errorf("resume: %v\n%q", err, resumed.Raw)
+	}
+}
