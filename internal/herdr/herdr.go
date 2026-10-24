@@ -239,6 +239,35 @@ func (Client) AgentStatus(target string) (string, error) {
 	return res.Agent.AgentStatus, nil
 }
 
+// AgentInfo is what herdr knows about an agent besides its status: the
+// session it is in and where. That is how a run's transcript is found once
+// its tab is gone (Claude: ~/.claude/projects/*/<session>.jsonl).
+type AgentInfo struct {
+	Kind          string
+	SessionID     string
+	SessionSource string
+	CWD           string
+}
+
+// AgentInfo reads the agent in a pane.
+func (Client) AgentInfo(target string) (AgentInfo, error) {
+	var res struct {
+		Agent struct {
+			Agent   string `json:"agent"`
+			Session struct {
+				Source string `json:"source"`
+				Value  string `json:"value"`
+			} `json:"agent_session"`
+			CWD string `json:"cwd"`
+		} `json:"agent"`
+	}
+	if err := run(&res, "agent", "get", target); err != nil {
+		return AgentInfo{}, err
+	}
+	a := res.Agent
+	return AgentInfo{Kind: a.Agent, SessionID: a.Session.Value, SessionSource: a.Session.Source, CWD: a.CWD}, nil
+}
+
 // AgentSubmitPending presses Enter on the pane, submitting anything already
 // sitting in the composer. Harmless when the composer is empty.
 func (Client) AgentSubmitPending(paneID string) error {
@@ -249,6 +278,27 @@ func (Client) AgentSubmitPending(paneID string) error {
 func (Client) AgentWait(target string, timeout time.Duration) error {
 	return run(nil, "agent", "wait", target,
 		"--timeout", fmt.Sprintf("%d", timeout.Milliseconds()))
+}
+
+// WorkspaceExists reports whether a workspace ID names an open workspace in
+// this Herdr: what an automation in existing mode needs before it can run here.
+func (Client) WorkspaceExists(id string) (bool, error) {
+	// Bounded: it is asked from SSH, and an unreachable Herdr must not hang
+	// an apply.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := runCtx(ctx, nil, "workspace", "get", id)
+	if HasCode(err, CodeWorkspaceGone) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// InvokeAction asks the Herdr server to run a plugin action, by its qualified
+// id (plugin.id.action). The server spawns it with the plugin's environment
+// and returns once it has started, not once it has finished.
+func (Client) InvokeAction(qualifiedID string) error {
+	return run(nil, "plugin", "action", "invoke", qualifiedID)
 }
 
 // ErrGone means the run's workspace no longer exists — the expected outcome

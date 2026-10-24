@@ -153,20 +153,13 @@ func removeAll(plan cleanup.Plan) tea.Msg {
 	return cleanedMsg{removed: removed, err: err}
 }
 
-// togglePause flips Disabled for the named automation and saves the config.
-// It reports through editedMsg so the board reloads exactly as it does after
-// `e`: the file on disk is the source of truth, not the in-memory row.
-func togglePause(name string) tea.Msg {
-	cfg, err := config.Load()
-	if err != nil {
-		return editedMsg{err: err}
-	}
-	a := cfg.Find(name)
-	if a == nil {
-		return editedMsg{err: fmt.Errorf("no automation named %q", name)}
-	}
-	a.Disabled = !a.Disabled
-	return editedMsg{err: config.Save(cfg)}
+// togglePause flips Disabled for the named automation, changing only that
+// entry's disabled: line. It reports through editedMsg so the board reloads
+// exactly as it does after `e`: the file on disk is the source of truth, not
+// the in-memory row.
+func togglePause(name string, paused bool) tea.Msg {
+	_, _, _, err := config.SetDisabled(name, !paused, "")
+	return editedMsg{err: err}
 }
 
 func Run() error {
@@ -183,8 +176,12 @@ func load() model {
 		m.err = err
 		return m
 	}
+	latest, _ := history.Latest()
 	for _, a := range cfg.Automations {
-		last, _ := history.LastRun(a.Name)
+		var last *history.Record
+		if r, ok := latest[a.Name]; ok {
+			last = &r
+		}
 		m.rows = append(m.rows, row{name: a.Name, line: a.Line, auto: a, last: last})
 	}
 	// The entries that did not load go on the board too. A typo used to blank
@@ -316,8 +313,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					verb = "resuming "
 				}
 				m.setNotice(dimStyle, verb+r.name+"…")
-				name := r.name
-				return m, func() tea.Msg { return togglePause(name) }
+				name, paused := r.name, r.auto.Disabled
+				return m, func() tea.Msg { return togglePause(name, paused) }
 			}
 		case "e":
 			// Open the YAML in $EDITOR at the selected automation's line,

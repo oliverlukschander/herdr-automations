@@ -46,10 +46,13 @@ func (n *Notifier) Outcome(name string, st history.Status, detail string) {
 		n.show(name+" — action needed", oneLine(detail), herdr.SoundRequest)
 		return
 	}
-	if st != history.StatusFailed {
-		return
+	switch st {
+	case history.StatusFailed:
+		n.show(name+" failed", oneLine(detail), herdr.SoundRequest)
+	case history.StatusInterrupted:
+		// Like a failure: nobody decided this, and the work may be half done.
+		n.show(name+" was interrupted", oneLine(detail), herdr.SoundRequest)
 	}
-	n.show(name+" failed", oneLine(detail), herdr.SoundRequest)
 }
 
 // Tick toasts one line for everything a scheduler tick found wrong, instead of

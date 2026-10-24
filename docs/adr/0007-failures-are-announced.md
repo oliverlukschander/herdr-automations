@@ -18,6 +18,7 @@ scheduler.
 | Status | Toast | `--sound` | Why |
 |---|---|---|---|
 | `failed` | yes, immediate | `request` | the reason this exists |
+| `interrupted` | yes, immediate | `request` | added by [ADR 0010](0010-run-now-is-a-request-to-the-daemon.md): a run whose process died, which nobody decided |
 | `missed` | yes, grouped per tick | `none` | history.go already says a missing run is worse than a red one |
 | `invalid` | yes, grouped per tick | `none` | a silently dead automation; only the daemon notices |
 | `cancelled` | no | — | the user closed the workspace; they were there ([ADR 0006](0006-occurrences-are-dropped-not-queued.md), and the crash-vs-cancel fix that keeps this status honest) |

@@ -1,12 +1,14 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/DnzzL/herdr-automations/internal/config"
 )
@@ -26,22 +28,31 @@ func acquireLock() (release func(), err error) {
 	if err := os.MkdirAll(config.StateDir(), 0o755); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(config.StateDir(), "daemon.pid")
+	path := pidPath()
 
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("another daemon is already running (pid %s)", holderPID(path))
+	// Probe takes the lock shared for a moment. A daemon that started in that
+	// moment and gave up at once would take the probe for a second daemon, and
+	// nothing runs the startup hook again — so it asks for a while first.
+	for deadline := time.Now().Add(lockWait); ; time.Sleep(lockPoll) {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) || time.Now().After(deadline) {
+			f.Close()
+			return nil, fmt.Errorf("%w (pid %s)", ErrRunning, holderPID(path))
+		}
 	}
 
 	if err := f.Truncate(0); err != nil {
 		releaseFile(f)
 		return nil, err
 	}
-	if _, err := f.WriteAt([]byte(strconv.Itoa(os.Getpid())), 0); err != nil {
+	if _, err := f.WriteAt([]byte(strconv.Itoa(os.Getpid())+"\n"+takesRequests+"\n"), 0); err != nil {
 		releaseFile(f)
 		return nil, err
 	}
@@ -52,6 +63,65 @@ func acquireLock() (release func(), err error) {
 	}, nil
 }
 
+// ErrRunning means another daemon holds the lock.
+var ErrRunning = errors.New("another daemon is already running")
+
+// lockWait is how long a starting daemon keeps asking for a lock somebody
+// holds; far longer than a Probe holds it, far shorter than any real daemon.
+const (
+	lockWait = 2 * time.Second
+	lockPoll = 50 * time.Millisecond
+)
+
+func pidPath() string { return filepath.Join(config.StateDir(), "daemon.pid") }
+
+// takesRequests is the pidfile's second line: this daemon handles SIGUSR1 by
+// taking run-now requests. One from before ignores the signal (Go drops
+// signals nobody listens for) and never reads requests, so `run --detach`
+// tells the app to wait for its upgrade rather than queue a request nobody
+// will take.
+const takesRequests = "requests"
+
+// Status is what Probe found out about the scheduler on this machine.
+type Status struct {
+	Running bool
+	// PID is what the pidfile says, when a daemon holds it.
+	PID int
+	// TakesRequests is set when that daemon can be woken with SIGUSR1.
+	TakesRequests bool
+	// Since is when that daemon took the lock: the pidfile is written then.
+	Since time.Time
+}
+
+// Probe reports whether a daemon holds the lock, for `list`. It asks the kernel
+// the same question acquireLock does — the pidfile alone proves nothing (see
+// above) — by trying for the lock shared and letting go at once. It never
+// creates the pidfile: no file means no daemon has ever run here.
+func Probe() Status {
+	path := pidPath()
+	f, err := os.Open(path)
+	if err != nil {
+		return Status{}
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err == nil {
+		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		return Status{}
+	} else if !errors.Is(err, syscall.EWOULDBLOCK) {
+		return Status{}
+	}
+	st := Status{Running: true}
+	st.PID, _ = strconv.Atoi(holderPID(path))
+	if raw, err := os.ReadFile(path); err == nil {
+		lines := strings.Split(string(raw), "\n")
+		st.TakesRequests = len(lines) > 1 && strings.TrimSpace(lines[1]) == takesRequests
+	}
+	if info, err := f.Stat(); err == nil {
+		st.Since = info.ModTime()
+	}
+	return st
+}
+
 // releaseFile drops the flock. Closing the descriptor would be enough, but
 // unlocking first keeps the intent obvious at the call sites.
 func releaseFile(f *os.File) {
@@ -59,14 +129,15 @@ func releaseFile(f *os.File) {
 	f.Close()
 }
 
-// holderPID reports what the pidfile claims, for the error message only. The
-// file may be empty if the holder has not written its PID yet.
+// holderPID reports what the pidfile claims: its first line. The file may be
+// empty if the holder has not written its PID yet.
 func holderPID(path string) string {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return "unknown"
 	}
-	if pid := strings.TrimSpace(string(raw)); pid != "" {
+	first, _, _ := strings.Cut(string(raw), "\n")
+	if pid := strings.TrimSpace(first); pid != "" {
 		return pid
 	}
 	return "unknown"

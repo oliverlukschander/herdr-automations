@@ -1,6 +1,7 @@
 package schedule
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -46,7 +47,7 @@ func only(t *testing.T, res Result) Decision {
 // ── due ─────────────────────────────────────────────────────────────
 
 func TestDueNotYet(t *testing.T) {
-	sched, _ := config.CronParser.Parse("0 9 * * 1") // Mondays at 09:00
+	sched, _ := config.ParseCron("0 9 * * 1") // Mondays at 09:00
 	_, _, ok := due(sched, at(t, "2026-08-10 09:00"), at(t, "2026-08-10 15:00"))
 	if ok {
 		t.Fatal("nothing should be due before the next Monday")
@@ -54,7 +55,7 @@ func TestDueNotYet(t *testing.T) {
 }
 
 func TestDueAfterSleepReturnsTheOccurrence(t *testing.T) {
-	sched, _ := config.CronParser.Parse("0 9 * * 1")
+	sched, _ := config.ParseCron("0 9 * * 1")
 	// Laptop asleep from Sunday evening; wakes Monday afternoon.
 	occ, skipped, ok := due(sched, at(t, "2026-08-09 20:00"), at(t, "2026-08-10 17:13"))
 	if !ok {
@@ -69,7 +70,7 @@ func TestDueAfterSleepReturnsTheOccurrence(t *testing.T) {
 }
 
 func TestDueCountsEveryMissedOccurrence(t *testing.T) {
-	sched, _ := config.CronParser.Parse("0 9 * * *") // daily at 09:00
+	sched, _ := config.ParseCron("0 9 * * *") // daily at 09:00
 	// Away for three days: three occurrences passed, the latest is today's.
 	occ, skipped, ok := due(sched, at(t, "2026-08-07 12:00"), at(t, "2026-08-10 10:00"))
 	if !ok {
@@ -289,5 +290,68 @@ func TestNextRunSaysSoWhenTheCronIsUnparseable(t *testing.T) {
 	}
 	if _, ok := NextRun(config.Automation{Cron: "@daily"}, time.Now()); !ok {
 		t.Fatal("want ok=true for @daily")
+	}
+}
+
+// Review round 3, finding 2: a valid cron that never comes due made robfig
+// answer zero times, which went out as null next runs. There are none.
+func TestACronThatNeverComesDueHasNoNextRun(t *testing.T) {
+	from := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	runs, err := Upcoming("0 0 30 2 *", from, 5)
+	if err != nil || len(runs) != 0 || runs == nil {
+		t.Errorf("Upcoming = %v (nil %v), %v", runs, runs == nil, err)
+	}
+	if _, ok := NextRun(config.Automation{Cron: "0 0 30 2 *"}, from); ok {
+		t.Error("NextRun says it comes due")
+	}
+	// A cron that comes due once or twice in five years gives just those.
+	rare, _ := Upcoming("0 0 29 2 1", from, 5) // 29 February on a Monday
+	for _, r := range rare {
+		if r.IsZero() {
+			t.Errorf("a zero time among %v", rare)
+		}
+	}
+}
+
+// Review round 3, finding 3: on the night the clocks go back, a daily 02:30
+// matched twice an hour apart and ran twice. A fixed-hour cron comes due
+// once; an hourly one keeps running by real time.
+func TestTheAutumnClockChangeRunsAFixedTimeOnce(t *testing.T) {
+	vienna, err := time.LoadLocation("Europe/Vienna")
+	if err != nil {
+		t.Skip("no zone data:", err)
+	}
+	at := func(s string) time.Time {
+		v, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	fmtAll := func(ts []time.Time) string {
+		var out []string
+		for _, x := range ts {
+			out = append(out, x.In(vienna).Format("01-02 15:04 -07"))
+		}
+		return strings.Join(out, ", ")
+	}
+
+	daily, _ := Upcoming("CRON_TZ=Europe/Vienna 30 2 * * *", at("2026-10-24T12:00:00+02:00"), 3)
+	if got := fmtAll(daily); got != "10-25 02:30 +02, 10-26 02:30 +01, 10-27 02:30 +01" {
+		t.Errorf("daily 02:30 = %s", got)
+	}
+	hourly, _ := Upcoming("CRON_TZ=Europe/Vienna 0 * * * *", at("2026-10-25T01:30:00+02:00"), 3)
+	if got := fmtAll(hourly); got != "10-25 02:00 +02, 10-25 02:00 +01, 10-25 03:00 +01" {
+		t.Errorf("hourly = %s", got)
+	}
+
+	// The scheduler: the 02:30 run has fired; at 02:45, an hour of real time
+	// later in the repeated hour, nothing is due.
+	cfg := &config.Config{Automations: []config.Automation{{Name: "d", Cron: "CRON_TZ=Europe/Vienna 30 2 * * *", CatchUpMinutes: 120}}}
+	res := Plan(cfg, State{LastOccurrence: map[string]time.Time{"d": at("2026-10-25T02:30:00+02:00")}}, at("2026-10-25T02:45:00+01:00"))
+	for _, d := range res.Decisions {
+		if d.Kind == Fire || d.Kind == Missed {
+			t.Errorf("decision in the repeated hour: %+v", d)
+		}
 	}
 }

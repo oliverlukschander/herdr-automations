@@ -15,7 +15,9 @@ package cleanup
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"github.com/DnzzL/herdr-automations/internal/config"
@@ -222,10 +224,29 @@ func (gitRepos) Remove(c Candidate) error {
 }
 
 func git(repo string, args ...string) error {
-	return exec.Command("git", append([]string{"-C", repo}, args...)...).Run()
+	return GitCommand(repo, args...).Run()
 }
 
 func output(repo string, args ...string) (string, error) {
-	out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).Output()
+	out, err := GitCommand(repo, args...).Output()
 	return strings.TrimSpace(string(out)), err
+}
+
+// GitCommand runs git on repo and on nothing else. `git -C` changes directory
+// but does not override a GIT_DIR in the environment, and a git hook or `git
+// rebase --exec` exports one: cleanup would then remove branches in whichever
+// repository that names. So the variables that point git at a repository are
+// dropped, the way git itself drops them before entering a submodule.
+func GitCommand(repo string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		name, _, _ := strings.Cut(kv, "=")
+		return slices.Contains(repoLocators, name)
+	})
+	return cmd
+}
+
+var repoLocators = []string{
+	"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+	"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
 }

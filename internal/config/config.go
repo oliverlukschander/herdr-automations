@@ -23,11 +23,24 @@ import (
 	"github.com/DnzzL/herdr-automations/internal/hostpath"
 )
 
-// CronParser accepts the standard 5-field crontab syntax plus descriptors
+// cronParser accepts the standard 5-field crontab syntax plus descriptors
 // like @daily. Shared by the daemon and the wizard preview.
-var CronParser = cron.NewParser(
+var cronParser = cron.NewParser(
 	cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor,
 )
+
+// ParseCron parses a cron expression, and never panics doing it. robfig/cron
+// v3 slices past the end of "CRON_TZ=Europe/Vienna" with nothing after the
+// zone: a typo in one automation took the whole daemon down, every 30 s,
+// and `apply` along with it.
+func ParseCron(expr string) (s cron.Schedule, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			s, err = nil, fmt.Errorf("cannot parse it (%v)", r)
+		}
+	}()
+	return cronParser.Parse(expr)
+}
 
 type Workspace string
 
@@ -133,17 +146,20 @@ func (a Automation) CatchUp() time.Duration {
 }
 
 func (a *Automation) validate() error {
-	if a.CloseWhenNoAction && a.Workspace != WorkspaceExisting {
-		return fmt.Errorf("%s: close_when_no_action requires workspace: existing", a.Name)
-	}
 	if a.Name == "" {
 		return fmt.Errorf("automation without a name")
 	}
 	if a.Cron == "" {
 		return fmt.Errorf("%s: missing cron", a.Name)
 	}
-	if _, err := CronParser.Parse(a.Cron); err != nil {
+	sched, err := ParseCron(a.Cron)
+	if err != nil {
 		return fmt.Errorf("%s: invalid cron %q: %w", a.Name, a.Cron, err)
+	}
+	// An automation that can never run is the silent absence this file is
+	// written against: say so where the broken entries are shown.
+	if sched.Next(time.Now()).IsZero() {
+		return fmt.Errorf("%s: cron %q never comes due (no date within five years matches it)", a.Name, a.Cron)
 	}
 	if a.Repo == "" {
 		return fmt.Errorf("%s: missing repo", a.Name)
@@ -207,30 +223,124 @@ func Path() string { return filepath.Join(Dir(), "automations.yaml") }
 // short of that is a Diagnostic on Config.Invalid, and the entries that did
 // load still run.
 func Load() (*Config, error) {
+	f, err := Read()
+	if err != nil {
+		return nil, err
+	}
+	return f.Config, nil
+}
+
+// File is automations.yaml as read: the Config it loads to, plus the text and
+// where each entry sits in it, so a writer can change one entry and leave every
+// other byte alone.
+type File struct {
+	*Config
+	Raw    []byte
+	Exists bool
+	// Items are the entries in file order, the ones that did not load included.
+	Items []Item
+	// dash is the 0-based column of the sequence's dashes, or -1 when the
+	// automations are not a block sequence and have no lines of their own.
+	dash int
+	// keyLine is the 0-based line of the automations: key, -1 when absent.
+	keyLine int
+	// lines is Raw cut where yaml.v3 counts lines (lines.go).
+	lines []line
+}
+
+// Item is one entry of the automations sequence, valid or not.
+type Item struct {
+	// Name is the entry's name, or empty when even that could not be read.
+	Name string
+	// Line is where the entry's first key sits, 1-based: the same number its
+	// Automation or Diagnostic carries.
+	Line int
+	node *yaml.Node
+	// first and last are the 0-based lines the entry occupies: its own leading
+	// comments included, the blank lines around it not. -1 when the entry
+	// cannot be edited line by line (see locate).
+	first, last int
+	// end is the last line the entry was found to reach, kept even when it
+	// cannot be edited: appending after it needs no more than that. -1 when
+	// the list is not a block list.
+	end int
+}
+
+// Decode decodes the entry as written, without defaults or validation.
+func (it Item) Decode(v any) error { return it.node.Decode(v) }
+
+// Read reads and loads automations.yaml. See Load for what counts as an error.
+func Read() (*File, error) {
 	raw, err := os.ReadFile(Path())
 	if os.IsNotExist(err) {
-		return &Config{}, nil
+		return &File{Config: &Config{}, lines: splitLines(nil), dash: -1, keyLine: -1}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	f, err := parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	f.Exists = true
+	return f, nil
+}
+
+// parse loads a config from its text.
+//
+// It never panics. Everything below is meant not to, and the recover is the
+// last line of defence: the daemon loads the file every 30 s, and a loader
+// that panics on some file is a scheduler that is gone for good.
+func parse(raw []byte) (f *File, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			f, err = nil, fmt.Errorf("parse %s: cannot read it (%v)", Path(), r)
+		}
+	}()
 	// Decoding through yaml.Node rather than straight into Config is what buys
 	// the line numbers: a diagnostic that cannot say where to look is only
 	// marginally better than silence.
-	var doc struct {
-		Automations []yaml.Node `yaml:"automations"`
-	}
+	var doc yaml.Node
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", Path(), err)
 	}
+	f = &File{Config: &Config{}, Raw: raw, lines: splitLines(raw), dash: -1, keyLine: -1}
+	var seq *yaml.Node
+	next := len(f.lines) // the top-level key after automations:, if any
+	if len(doc.Content) > 0 {
+		root := doc.Content[0]
+		if root.Kind != yaml.MappingNode && !isNull(root) {
+			return nil, fmt.Errorf("parse %s: line %d: expected automations: at the top", Path(), root.Line)
+		}
+		for i := 0; i+1 < len(root.Content); i += 2 {
+			if root.Content[i].Value != "automations" {
+				continue
+			}
+			if seq != nil {
+				return nil, fmt.Errorf("parse %s: line %d: automations is declared twice", Path(), root.Content[i].Line)
+			}
+			f.keyLine = root.Content[i].Line - 1
+			seq = root.Content[i+1]
+			if i+2 < len(root.Content) {
+				next = root.Content[i+2].Line - 1
+			}
+		}
+	}
+	switch {
+	case seq == nil, isNull(seq), seq.Kind == yaml.SequenceNode && len(seq.Content) == 0:
+		return f, nil // no automations yet
+	case seq.Kind != yaml.SequenceNode:
+		return nil, fmt.Errorf("parse %s: line %d: automations must be a list", Path(), seq.Line)
+	}
 
-	cfg := &Config{}
+	cfg := f.Config
 	seen := map[string]bool{}
-	for _, node := range doc.Automations {
+	for _, node := range seq.Content {
+		f.Items = append(f.Items, Item{Name: nameOf(*node), Line: node.Line, node: node, first: -1, last: -1, end: -1})
 		var a Automation
 		if err := node.Decode(&a); err != nil {
 			cfg.Invalid = append(cfg.Invalid, Diagnostic{
-				Name: nameOf(node), Line: node.Line, Message: cleanYAMLError(err),
+				Name: nameOf(*node), Line: node.Line, Message: cleanYAMLError(err),
 			})
 			continue
 		}
@@ -255,8 +365,11 @@ func Load() (*Config, error) {
 		seen[a.Name] = true
 		cfg.Automations = append(cfg.Automations, a)
 	}
-	return cfg, nil
+	f.locate(seq, next)
+	return f, nil
 }
+
+func isNull(n *yaml.Node) bool { return n.Kind == yaml.ScalarNode && n.Tag == "!!null" }
 
 // nameOf recovers just the name from an entry too malformed to decode whole,
 // so the diagnostic can still say which automation it is about.
@@ -278,29 +391,6 @@ func cleanYAMLError(err error) string {
 		return rest
 	}
 	return strings.TrimPrefix(msg, "yaml: ")
-}
-
-// Save writes the config back, creating the directory on first use.
-//
-// It refuses while anything in the file failed to load. Save marshals what the
-// Config holds, and a Config holds only the entries that loaded — so writing
-// one back over a file with a broken entry in it deletes that entry. The wizard
-// does read-append-save, which is how `add` would silently eat an automation
-// with a typo in it.
-func Save(cfg *Config) error {
-	if len(cfg.Invalid) > 0 {
-		return fmt.Errorf("%s has %d entr%s that did not load; fix %s first",
-			filepath.Base(Path()), len(cfg.Invalid),
-			plural(len(cfg.Invalid), "y", "ies"), cfg.Invalid[0])
-	}
-	if err := os.MkdirAll(Dir(), 0o755); err != nil {
-		return err
-	}
-	out, err := yaml.Marshal(cfg)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(Path(), out, 0o644)
 }
 
 // Find returns the automation named name, or nil.
@@ -330,14 +420,6 @@ func (c *Config) Diagnostic(name string) *Diagnostic {
 // happens to be valid writes a second one nobody asked for.
 func (c *Config) Declares(name string) bool {
 	return c.Find(name) != nil || c.Diagnostic(name) != nil
-}
-
-// plural picks a suffix without making the caller write a map literal.
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return one
-	}
-	return many
 }
 
 func expandHome(p string) string {

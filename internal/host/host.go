@@ -30,12 +30,29 @@ type Session struct {
 	PaneID      string
 }
 
+// Agent is what Herdr knows about the agent a run started: enough to find
+// its transcript once the tab is gone.
+type Agent struct {
+	SessionID     string
+	SessionSource string
+	CWD           string
+}
+
 // Host provisions somewhere for a run to happen, and does the work there.
 type Host interface {
 	Provision(a config.Automation) (Session, error)
-	Do(s Session, a config.Automation, timeout time.Duration) error
+	// Do does the work. seen, when set, hears about the agent as soon as it
+	// is working and again once it settles; a workflow has no agent to tell
+	// of.
+	Do(s Session, a config.Automation, timeout time.Duration, seen func(Agent)) error
 	CloseTab(s Session, a config.Automation) error
+	// Capture is the run's pane as text, its last CaptureLines lines.
+	Capture(s Session) (string, error)
 }
+
+// CaptureLines is how much of a pane Capture keeps: a screenful or ten,
+// enough for a workflow's own report or an agent's last answer.
+const CaptureLines = 500
 
 // ErrCancelled means the run's workspace was closed while it was working.
 // Closing it is the gesture for calling a run off, so the run is reported
@@ -111,8 +128,13 @@ func (h *live) Provision(a config.Automation) (Session, error) {
 }
 
 // Do runs the automation's work in the session and reports whether it worked.
-func (h *live) Do(s Session, a config.Automation, timeout time.Duration) error {
-	return h.workFor(a).do(s, timeout)
+func (h *live) Do(s Session, a config.Automation, timeout time.Duration, seen func(Agent)) error {
+	return h.workFor(a, seen).do(s, timeout)
+}
+
+// Capture reads back the run's pane.
+func (h *live) Capture(s Session) (string, error) {
+	return h.ops.PaneRead(s.PaneID, CaptureLines)
 }
 
 // work is one way of getting an automation's work done in a session. Two
@@ -123,11 +145,11 @@ type work interface {
 	do(s Session, timeout time.Duration) error
 }
 
-func (h *live) workFor(a config.Automation) work {
+func (h *live) workFor(a config.Automation, seen func(Agent)) work {
 	if a.Workflow != "" {
 		return hwfWork{ops: h.ops, knobs: h.knobs, name: a.Workflow, reportPath: a.ReportPath}
 	}
-	return agentWork{ops: h.ops, knobs: h.knobs, a: a}
+	return agentWork{ops: h.ops, knobs: h.knobs, a: a, seen: seen}
 }
 
 // slug makes a name safe for a git branch: spaces and the characters
@@ -194,7 +216,7 @@ func agentName(name string) string {
 
 // CloseTab refuses to close a working/blocked agent or a moved/shared tab.
 func (h *live) CloseTab(s Session, a config.Automation) error {
-	if a.Workspace != config.WorkspaceExisting || s.TabID == "" {
+	if s.TabID == "" {
 		return fmt.Errorf("run has no owned tab")
 	}
 	if a.Workflow == "" {

@@ -156,3 +156,26 @@ func TestTabCloseVerifiesRemoval(t *testing.T) {
 		}
 	}
 }
+
+// A closed workspace is an answer, not an error; anything else herdr says is.
+func TestWorkspaceExists(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "herdr")
+	script := "#!/bin/sh\ncase \"$3\" in\n" +
+		"  w1) echo '{\"result\":{\"type\":\"workspace_info\"}}' ;;\n" +
+		"  w2) echo '{\"error\":{\"code\":\"workspace_not_found\",\"message\":\"gone\"}}' >&2; exit 1 ;;\n" +
+		"  *) echo '{\"error\":{\"code\":\"server_unreachable\",\"message\":\"no server\"}}' >&2; exit 1 ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(fake, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HERDR_BIN_PATH", fake)
+	for id, want := range map[string]bool{"w1": true, "w2": false} {
+		if open, err := (Client{}).WorkspaceExists(id); open != want || err != nil {
+			t.Errorf("%s: open=%v err=%v", id, open, err)
+		}
+	}
+	if open, err := (Client{}).WorkspaceExists("w3"); open || !HasCode(err, "server_unreachable") {
+		t.Errorf("unreachable: open=%v err=%v", open, err)
+	}
+}

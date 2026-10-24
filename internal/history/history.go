@@ -4,10 +4,17 @@ package history
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/DnzzL/herdr-automations/internal/config"
@@ -35,6 +42,11 @@ const (
 	// Closing a run's workspace is how you call one off, so it is not a
 	// failure: nothing broke, somebody decided.
 	StatusCancelled Status = "cancelled"
+	// StatusInterrupted records a run whose runner process died under it: an
+	// SSH session that hung up on a CLI `run`, a daemon killed with the Herdr
+	// server. Its last record said scheduled or running, and nothing was left
+	// to ever say otherwise.
+	StatusInterrupted Status = "interrupted"
 )
 
 // Trigger is why a run started. CONTEXT.md names three.
@@ -72,6 +84,31 @@ type Record struct {
 	WorkspaceID        string    `json:"workspace_id,omitempty"`
 	PaneID             string    `json:"pane_id,omitempty"`
 	Error              string    `json:"error,omitempty"`
+	// RunnerPID is the process carrying the run out. A run that is still
+	// scheduled or running while this process is gone was interrupted.
+	RunnerPID int `json:"runner_pid,omitempty"`
+	// Agent and Model are what a prompt run asked for; Workflow is what a
+	// delegated one handed over to.
+	Agent    string `json:"agent,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Workflow string `json:"workflow,omitempty"`
+	// SessionID, SessionSource and CWD are the agent's session as Herdr
+	// reported it: how its transcript is found once the tab is gone.
+	SessionID     string `json:"session_id,omitempty"`
+	SessionSource string `json:"session_source,omitempty"`
+	CWD           string `json:"cwd,omitempty"`
+}
+
+// Orphaned reports whether a run's latest record says it is under way while
+// the process running it is gone. Records from before RunnerPID existed say
+// nothing either way. A reused PID makes a dead run look alive, never the
+// other way round.
+func Orphaned(r Record) bool {
+	if r.RunnerPID <= 0 || (r.Status != StatusScheduled && r.Status != StatusRunning) {
+		return false
+	}
+	err := syscall.Kill(r.RunnerPID, 0)
+	return err != nil && !errors.Is(err, syscall.EPERM)
 }
 
 func path() string { return filepath.Join(config.StateDir(), "history.jsonl") }
@@ -95,12 +132,113 @@ func Append(r Record) error {
 	return err
 }
 
-// Runs returns the latest record per run, newest first, optionally filtered
+// StartedAt is when a run began, read back from the nanoseconds NewID puts at
+// the end of every ID. ok is false for an ID NewID did not make.
+func StartedAt(runID string) (time.Time, bool) {
+	i := strings.LastIndexByte(runID, '-')
+	if i < 0 {
+		return time.Time{}, false
+	}
+	n, err := strconv.ParseInt(runID[i+1:], 10, 64)
+	if err != nil || n < 1e17 { // a plain counter, not a clock reading
+		return time.Time{}, false
+	}
+	return time.Unix(0, n), true
+}
+
+// lateWrite is how far out of time order a record may land in the log. Runs
+// append from goroutines and from other processes, so the file is only roughly
+// sorted; a backwards scan stops this far past where it could.
+const lateWrite = time.Minute
+
+// Runs returns the latest record per run, newest run first, optionally filtered
 // by automation name, capped at limit (0 = no cap).
+//
+// It reads the log backwards, so what it costs follows limit rather than the
+// size of a file nothing ever truncates (2.5 MB on a Mac after a few weeks).
+// The first record met for a run is its latest; once limit runs are held, the
+// scan stops at the first record older than any run that could still displace
+// one of them.
 func Runs(automation string, limit int) ([]Record, error) {
+	return runs(limit, func(r Record) bool { return automation == "" || r.Automation == automation })
+}
+
+// LastRun is the automation's last run as Latest counts it, or nil when it
+// never ran. It reads backwards like Runs, so show stays a recent read.
+func LastRun(automation string) (*Record, error) {
+	out, err := runs(1, func(r Record) bool { return r.Automation == automation && countsAsLastRun(r) })
+	if err != nil || len(out) == 0 {
+		return nil, err
+	}
+	return &out[0], nil
+}
+
+// countsAsLastRun reports whether r can be what the views show as an
+// automation's last run. An invalid record is the daemon saying it could not
+// read the entry; once the entry loads again it would show a fixed entry as
+// broken. The record stays in the log and in history.
+func countsAsLastRun(r Record) bool { return r.Status != StatusInvalid }
+
+// runs is Runs over the records keep accepts.
+func runs(limit int, keep func(Record) bool) ([]Record, error) {
+	latest := map[string]Record{}
+	start := map[string]time.Time{}
+	var ids []string
+	var floor time.Time
+	err := backward(func(r Record) bool {
+		if !keep(r) {
+			return true
+		}
+		if limit > 0 && len(ids) >= limit && r.At.Before(floor.Add(-lateWrite)) {
+			return false
+		}
+		if _, seen := latest[r.RunID]; !seen {
+			latest[r.RunID] = r
+			ids = append(ids, r.RunID)
+		}
+		// An ID NewID did not make starts at its earliest record.
+		if t, ok := StartedAt(r.RunID); ok {
+			start[r.RunID] = t
+		} else if s, ok := start[r.RunID]; !ok || r.At.Before(s) {
+			start[r.RunID] = r.At
+		}
+		if limit > 0 && len(ids) >= limit {
+			floor = newestStarts(ids, start)[limit-1]
+		}
+		return true
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(ids, func(i, j int) bool { return start[ids[i]].After(start[ids[j]]) })
+	if limit > 0 && len(ids) > limit {
+		ids = ids[:limit]
+	}
+	out := make([]Record, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, latest[id])
+	}
+	return out, nil
+}
+
+// newestStarts is the runs' start times, newest first.
+func newestStarts(ids []string, start map[string]time.Time) []time.Time {
+	out := make([]time.Time, len(ids))
+	for i, id := range ids {
+		out[i] = start[id]
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].After(out[j]) })
+	return out
+}
+
+// Latest returns, for every automation in the log, the latest record of its
+// newest run, invalid records left out (countsAsLastRun). It is one pass over
+// the whole file, where asking per automation was one pass each — and the
+// board asks every two seconds.
+func Latest() (map[string]Record, error) {
 	f, err := os.Open(path())
 	if os.IsNotExist(err) {
-		return nil, nil
+		return map[string]Record{}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -108,7 +246,8 @@ func Runs(automation string, limit int) ([]Record, error) {
 	defer f.Close()
 
 	latest := map[string]Record{}
-	order := []string{}
+	start := map[string]time.Time{}
+	newest := map[string]string{} // automation -> its most recently begun run
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
@@ -116,33 +255,98 @@ func Runs(automation string, limit int) ([]Record, error) {
 		if json.Unmarshal(sc.Bytes(), &r) != nil {
 			continue // tolerate a torn write rather than losing the file
 		}
-		if automation != "" && r.Automation != automation {
+		if !countsAsLastRun(r) {
 			continue
 		}
-		if _, ok := latest[r.RunID]; !ok {
-			order = append(order, r.RunID)
+		if _, seen := latest[r.RunID]; !seen {
+			// Begun when its ID says, as Runs orders them: a run-now request
+			// gets its ID before its first record lands, and a cron run can
+			// slip in between.
+			s, ok := StartedAt(r.RunID)
+			if !ok {
+				s = r.At
+			}
+			start[r.RunID] = s
+			if cur, ok := newest[r.Automation]; !ok || !s.Before(start[cur]) {
+				newest[r.Automation] = r.RunID
+			}
 		}
 		latest[r.RunID] = r
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
-
-	out := make([]Record, 0, len(order))
-	for i := len(order) - 1; i >= 0; i-- {
-		out = append(out, latest[order[i]])
-		if limit > 0 && len(out) == limit {
-			break
-		}
+	out := make(map[string]Record, len(newest))
+	for name, id := range newest {
+		out[name] = latest[id]
 	}
 	return out, nil
 }
 
-// LastRun returns the most recent record for an automation, or nil.
-func LastRun(automation string) (*Record, error) {
-	runs, err := Runs(automation, 1)
-	if err != nil || len(runs) == 0 {
-		return nil, err
+// Timeline returns every record of one run, oldest first. It reads backwards
+// and stops once the records predate the run, so looking at a recent run
+// costs a recent read.
+func Timeline(runID string) ([]Record, error) {
+	start, known := StartedAt(runID)
+	var out []Record
+	err := backward(func(r Record) bool {
+		if known && r.At.Before(start.Add(-lateWrite)) {
+			return false
+		}
+		if r.RunID == runID {
+			out = append(out, r)
+		}
+		return true
+	})
+	slices.Reverse(out)
+	return out, err
+}
+
+// backward hands fn the log's records newest line first, until fn returns
+// false. Lines that do not decode are skipped, as everywhere else.
+func backward(fn func(Record) bool) error {
+	f, err := os.Open(path())
+	if os.IsNotExist(err) {
+		return nil
 	}
-	return &runs[0], nil
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+
+	const chunk = 64 * 1024
+	buf := make([]byte, chunk)
+	var rest []byte // the start of the line the previous chunk began inside
+	emit := func(line []byte) bool {
+		var r Record
+		if len(line) == 0 || json.Unmarshal(line, &r) != nil {
+			return true
+		}
+		return fn(r)
+	}
+	for pos := info.Size(); pos > 0; {
+		n := min(int64(chunk), pos)
+		pos -= n
+		if _, err := f.ReadAt(buf[:n], pos); err != nil {
+			return err
+		}
+		data := append(buf[:n:n], rest...)
+		for {
+			i := bytes.LastIndexByte(data, '\n')
+			if i < 0 {
+				break
+			}
+			if !emit(data[i+1:]) {
+				return nil
+			}
+			data = data[:i]
+		}
+		rest = append([]byte(nil), data...)
+	}
+	emit(rest)
+	return nil
 }

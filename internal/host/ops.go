@@ -24,6 +24,7 @@ type ops interface {
 	AgentSubmitPending(paneID string) error
 	AgentStatus(target string) (string, error)
 	AgentWait(target string, timeout time.Duration) error
+	AgentInfo(target string) (herdr.AgentInfo, error)
 
 	PaneRun(paneID string, command ...string) error
 	PaneRead(paneID string, lines int) (string, error)

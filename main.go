@@ -5,10 +5,13 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/DnzzL/herdr-automations/internal/api"
 	"github.com/DnzzL/herdr-automations/internal/cleanup"
 	"github.com/DnzzL/herdr-automations/internal/config"
 	"github.com/DnzzL/herdr-automations/internal/daemon"
@@ -28,12 +31,24 @@ const usage = `herdr-automations — cron for your Herdr agents
 
 Usage:
   herdr-automations daemon           Run the scheduler (started by the plugin startup hook)
+  herdr-automations daemon start [--json]
+                                     Have Herdr start the scheduler if none is running
   herdr-automations add              Interactive wizard: create an automation
-  herdr-automations list             List automations with schedule and last run
-  herdr-automations run <name>       Trigger an automation now
-  herdr-automations pause <name>     Stop scheduling an automation
-  herdr-automations resume <name>    Resume a paused automation
-  herdr-automations history [name]   Show recent runs and action reports
+  herdr-automations list [--json]    List automations with schedule and last run
+  herdr-automations run <name>       Trigger an automation now, in this process
+  herdr-automations run <name> --detach [--json]
+                                     Hand it to the daemon and return at once
+  herdr-automations pause <name>     Stop scheduling an automation (--if-match SHA, --json)
+  herdr-automations resume <name>    Resume a paused automation (--if-match SHA, --json)
+  herdr-automations show <name>      Print an automation as written in automations.yaml
+  herdr-automations apply            Create or replace one automation from stdin (YAML or JSON)
+                                     [--dry-run] [--new] [--rename-from OLD] [--patch JSON]
+                                     [--require-runnable] [--if-match SHA] [--json]
+  herdr-automations delete <name>    Remove an automation (--if-match SHA, --json)
+  herdr-automations history [name] [--limit N] [--run ID] [--json]
+                                     Show recent runs and action reports
+  herdr-automations output <run_id> [--json]
+                                     Where a run's output is: its agent's transcript, its last pane
   herdr-automations report --file PATH --action yes|no --summary TEXT
   herdr-automations cleanup          Remove run worktrees whose work already landed
   herdr-automations pane             Interactive board (used by the Herdr pane)
@@ -42,6 +57,8 @@ Usage:
 
 Config:  %s
 History: %s
+
+--json prints one JSON object for the Orchestrator app (schema in internal/api).
 `
 
 func main() {
@@ -49,14 +66,34 @@ func main() {
 		fmt.Printf(usage, config.Path(), config.StateDir())
 		os.Exit(2)
 	}
+	api.Version = Version
+	if slices.Contains(os.Args, "--json") || slices.Contains(os.Args, "-json") {
+		// Whatever goes wrong, the app gets its one JSON object. Everything
+		// is meant never to panic; this is the net under that.
+		defer func() {
+			if r := recover(); r != nil {
+				emit(nil, fmt.Errorf("internal error: %v", r))
+			}
+		}()
+	}
 	var err error
 	switch os.Args[1] {
 	case "daemon":
-		err = daemon.Run()
+		switch mode, rest := daemonMode(os.Args[2:]); mode {
+		case "run":
+			err = daemon.Run()
+		case "start":
+			err = daemonStartCmd(rest)
+		default:
+			err = fmt.Errorf("usage: herdr-automations daemon, or daemon start [--json]")
+			if slices.Contains(os.Args, "--json") || slices.Contains(os.Args, "-json") {
+				emit(nil, usageError(err))
+			}
+		}
 	case "add":
 		err = wizard.Run()
 	case "list":
-		err = list()
+		err = listCmd(os.Args[2:])
 	case "cleanup":
 		err = cleanupCmd(os.Args[2:])
 	case "report":
@@ -67,12 +104,16 @@ func main() {
 		err = pauseCmd(os.Args[2:], true)
 	case "resume":
 		err = pauseCmd(os.Args[2:], false)
+	case "show":
+		err = showCmd(os.Args[2:])
+	case "apply":
+		err = applyCmd(os.Args[2:])
+	case "delete":
+		err = deleteCmd(os.Args[2:])
 	case "history":
-		name := ""
-		if len(os.Args) > 2 {
-			name = os.Args[2]
-		}
-		err = showHistory(name)
+		err = historyCmd(os.Args[2:])
+	case "output":
+		err = outputCmd(os.Args[2:])
 	case "pane":
 		err = pane.Run()
 	case "install-skill":
@@ -93,6 +134,66 @@ func main() {
 	}
 }
 
+// newFlags is a flag set for a subcommand that may be asked for --json. JSON
+// mode is read off the raw arguments rather than the parsed flag: a parse
+// error that stops before reaching --json is still owed to the app as JSON on
+// stdout, and the flag package must not print its own complaint first.
+func newFlags(name string, args []string) (*flag.FlagSet, bool) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.Bool("json", false, "print one JSON object for the Orchestrator app")
+	asJSON := slices.Contains(args, "--json") || slices.Contains(args, "-json")
+	if asJSON {
+		fs.SetOutput(io.Discard)
+	}
+	return fs, asJSON
+}
+
+// parseArgs lets flags and positional arguments come in any order. The app
+// builds these command lines; Go's flag package would otherwise stop at the
+// first name and read every flag after it as another name.
+func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return positional, nil
+		}
+		positional = append(positional, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
+}
+
+// emit prints a --json response and exits 1 on failure, with nothing on
+// stderr: the app reads stdout only.
+func emit(res api.Result, err error) {
+	if !api.Emit(os.Stdout, res, err) {
+		os.Exit(1)
+	}
+}
+
+func usageError(err error) error { return api.Fail(api.CodeUsage, "%v", err) }
+
+func listCmd(args []string) error {
+	fs, asJSON := newFlags("list", args)
+	rest, err := parseArgs(fs, args)
+	if err == nil && len(rest) > 0 {
+		err = fmt.Errorf("list takes no arguments")
+	}
+	if asJSON {
+		if err != nil {
+			emit(nil, usageError(err))
+		}
+		emit(api.List(time.Now()))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return list()
+}
+
 func list() error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -108,9 +209,10 @@ func list() error {
 	}
 	fmt.Printf("%-24s %-16s %-9s %-8s %-13s %s\n",
 		"NAME", "CRON", "WORKSPACE", "AGENT", "MODEL", "LAST RUN")
+	latest, _ := history.Latest()
 	for _, a := range cfg.Automations {
 		last := "never"
-		if r, _ := history.LastRun(a.Name); r != nil {
+		if r, ok := latest[a.Name]; ok {
 			last = fmt.Sprintf("%s (%s)", r.Status, r.At.Format("02 Jan 15:04"))
 		}
 		name := a.Name
@@ -238,6 +340,9 @@ func cleanupCmd(args []string) error {
 }
 
 func runCmd(args []string) error {
+	if slices.Contains(args, "--detach") || slices.Contains(args, "-detach") {
+		return detachCmd(args)
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -270,38 +375,291 @@ func runCmd(args []string) error {
 // pauseCmd toggles Disabled on a single automation and persists it. It shares
 // the config's own guardrail: Save refuses while any entry in the file failed
 // to load, so a broken sibling entry blocks this too.
-func pauseCmd(args []string, disabled bool) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: herdr-automations %s <name>", map[bool]string{true: "pause", false: "resume"}[disabled])
+// oneName parses a subcommand that takes exactly one automation name.
+func oneName(cmd string, args []string, fs *flag.FlagSet) (string, error) {
+	rest, err := parseArgs(fs, args)
+	if err == nil && len(rest) != 1 {
+		err = fmt.Errorf("usage: herdr-automations %s <name>", cmd)
 	}
-	cfg, err := config.Load()
+	if err != nil {
+		return "", err
+	}
+	return rest[0], nil
+}
+
+// daemonMode decides what `daemon <args>` is. The scheduler itself runs only
+// when asked with nothing else at all: `daemon --json start`, flags first,
+// once started a scheduler inside the SSH session that asked for one.
+func daemonMode(args []string) (mode string, rest []string) {
+	switch {
+	case len(args) == 0:
+		return "run", nil
+	case slices.Contains(args, "start"):
+		i := slices.Index(args, "start")
+		return "start", slices.Concat(args[:i], args[i+1:])
+	}
+	return "usage", nil
+}
+
+// daemonStartCmd starts a scheduler that is not running, through Herdr, so it
+// is not left as a child of the SSH session that asked. A running one is left
+// alone.
+func daemonStartCmd(args []string) error {
+	fs, asJSON := newFlags("daemon start", args)
+	rest, err := parseArgs(fs, args)
+	if err == nil && len(rest) > 0 {
+		err = fmt.Errorf("daemon start takes no arguments")
+	}
+	if asJSON {
+		if err != nil {
+			emit(nil, usageError(err))
+		}
+		emit(api.StartDaemon())
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	a := cfg.Find(args[0])
-	if a == nil {
-		if d := cfg.Diagnostic(args[0]); d != nil {
-			return fmt.Errorf("%s did not load: %s", args[0], d)
-		}
-		return fmt.Errorf("no automation named %q", args[0])
-	}
-	a.Disabled = disabled
-	if err := config.Save(cfg); err != nil {
+	res, err := api.StartDaemon()
+	if err != nil {
 		return err
 	}
-	verb := "Resumed"
-	if disabled {
-		verb = "Paused"
+	verb := "Already running"
+	if res.Started {
+		verb = "Started"
 	}
-	fmt.Printf("%s %s\n", verb, a.Name)
+	if res.Daemon.PID != nil {
+		verb += fmt.Sprintf(", pid %d", *res.Daemon.PID)
+	}
+	fmt.Println(verb)
 	return nil
 }
 
-func showHistory(name string) error {
-	runs, err := history.Runs(name, 30)
+// detachCmd is `run <name> --detach`: the daemon does the run, so it outlives
+// the SSH session that asked for it (ADR 0010).
+func detachCmd(args []string) error {
+	fs, asJSON := newFlags("run", args)
+	fs.Bool("detach", false, "hand the run to the daemon and return at once")
+	name, err := oneName("run --detach", args, fs)
+	if asJSON {
+		if err != nil {
+			emit(nil, usageError(err))
+		}
+		emit(api.RunDetached(name, time.Now()))
+		return nil
+	}
 	if err != nil {
 		return err
 	}
+	res, err := api.RunDetached(name, time.Now())
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Requested %s: run %s\nFollow it with: herdr-automations history --run '%s'\n", name, res.RunID, res.RunID)
+	return nil
+}
+
+// pauseCmd changes only the entry's disabled: line, so a hand-written file
+// keeps its comments. A broken sibling entry no longer blocks it: other
+// entries come out exactly as they went in, or nothing is written.
+func pauseCmd(args []string, disabled bool) error {
+	cmd := map[bool]string{true: "pause", false: "resume"}[disabled]
+	fs, asJSON := newFlags(cmd, args)
+	ifMatch := fs.String("if-match", "", "refuse unless automations.yaml still has this sha256")
+	name, err := oneName(cmd, args, fs)
+	if asJSON {
+		if err != nil {
+			emit(nil, usageError(err))
+		}
+		emit(api.SetPaused(name, disabled, *ifMatch, time.Now()))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	changed, _, _, err := config.SetDisabled(name, disabled, *ifMatch)
+	if err != nil {
+		return err
+	}
+	verb := map[bool]string{true: "Paused", false: "Resumed"}[disabled]
+	if !changed {
+		verb = "Already " + strings.ToLower(verb)
+	}
+	fmt.Printf("%s %s\n", verb, name)
+	return nil
+}
+
+func showCmd(args []string) error {
+	fs, asJSON := newFlags("show", args)
+	name, err := oneName("show", args, fs)
+	if asJSON {
+		if err != nil {
+			emit(nil, usageError(err))
+		}
+		emit(api.Show(name, time.Now()))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	res, err := api.Show(name, time.Now())
+	if err != nil {
+		return err
+	}
+	fmt.Print(res.YAML)
+	return nil
+}
+
+func applyCmd(args []string) error {
+	fs, asJSON := newFlags("apply", args)
+	var o api.ApplyOptions
+	fs.BoolVar(&o.DryRun, "dry-run", false, "validate and run the checks, write nothing")
+	fs.BoolVar(&o.New, "new", false, "refuse if an automation by that name exists")
+	fs.BoolVar(&o.RequireRunnable, "require-runnable", false, "refuse unless this machine passes the checks")
+	fs.StringVar(&o.RenameFrom, "rename-from", "", "replace the automation of this name (the body may rename it)")
+	fs.StringVar(&o.IfMatch, "if-match", "", "refuse unless automations.yaml still has this sha256")
+	fs.StringVar(&o.Patch, "patch", "", "JSON object of keys to set on the body (null removes one)")
+	rest, err := parseArgs(fs, args)
+	if err == nil && len(rest) > 0 {
+		err = fmt.Errorf("apply reads the automation from stdin and takes no names")
+	}
+	if asJSON {
+		if err != nil {
+			emit(nil, usageError(err))
+		}
+		body, readErr := io.ReadAll(os.Stdin)
+		if readErr != nil {
+			emit(nil, readErr)
+		}
+		emit(api.Apply(body, o, time.Now()))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	body, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return err
+	}
+	res, err := api.Apply(body, o, time.Now())
+	if err != nil {
+		return err
+	}
+	verb := map[string]string{"created": "Created", "replaced": "Replaced", "renamed": "Renamed", "unchanged": "Unchanged"}[res.Action]
+	if o.DryRun {
+		verb = "Would be " + strings.ToLower(verb)
+	}
+	fmt.Printf("%s %s\n", verb, res.Automation.Name)
+	for _, c := range res.Checks {
+		mark := "ok  "
+		if !c.OK {
+			mark = map[string]string{"error": "FAIL", "warning": "warn"}[c.Level]
+		}
+		fmt.Printf("  %s %-18s %s\n", mark, c.ID, c.Message)
+	}
+	return nil
+}
+
+func deleteCmd(args []string) error {
+	fs, asJSON := newFlags("delete", args)
+	ifMatch := fs.String("if-match", "", "refuse unless automations.yaml still has this sha256")
+	name, err := oneName("delete", args, fs)
+	if asJSON {
+		if err != nil {
+			emit(nil, usageError(err))
+		}
+		emit(api.Delete(name, *ifMatch))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := api.Delete(name, *ifMatch); err != nil {
+		return err
+	}
+	fmt.Printf("Deleted %s\n", name)
+	return nil
+}
+
+func outputCmd(args []string) error {
+	fs, asJSON := newFlags("output", args)
+	runID, err := oneName("output", args, fs)
+	if asJSON {
+		if err != nil {
+			emit(nil, usageError(err))
+		}
+		emit(api.Output(runID))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	res, err := api.Output(runID)
+	if err != nil {
+		return err
+	}
+	if t := res.Transcript; t != nil {
+		path := "not found on this machine"
+		if t.Path != nil {
+			path = *t.Path
+		}
+		fmt.Printf("Transcript (%s, session %s): %s\n", t.Agent, t.SessionID, path)
+	}
+	if res.Pane == nil {
+		fmt.Println("No pane output was kept for this run.")
+		return nil
+	}
+	fmt.Print(res.Pane.Text)
+	return nil
+}
+
+func historyCmd(args []string) error {
+	fs, asJSON := newFlags("history", args)
+	limit := fs.Int("limit", 30, "how many runs, newest first (0 = all)")
+	runID := fs.String("run", "", "one run and every record of it")
+	rest, err := parseArgs(fs, args)
+	switch {
+	case err != nil:
+	case len(rest) > 1:
+		err = fmt.Errorf("history takes at most one automation name")
+	case *runID != "" && len(rest) > 0:
+		err = fmt.Errorf("--run takes no automation name")
+	case *limit < 0:
+		err = fmt.Errorf("--limit must be 0 or more")
+	}
+	name := ""
+	if len(rest) == 1 {
+		name = rest[0]
+	}
+	if asJSON {
+		if err != nil {
+			emit(nil, usageError(err))
+		}
+		if *runID != "" {
+			emit(api.RunTimeline(*runID))
+		} else {
+			emit(api.History(name, *limit))
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if *runID != "" {
+		recs, err := history.Timeline(*runID)
+		if err != nil {
+			return err
+		}
+		return printRuns(recs)
+	}
+	runs, err := history.Runs(name, *limit)
+	if err != nil {
+		return err
+	}
+	return printRuns(runs)
+}
+
+func printRuns(runs []history.Record) error {
 	if len(runs) == 0 {
 		fmt.Println("No runs yet.")
 		return nil

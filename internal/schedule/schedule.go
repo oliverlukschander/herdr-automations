@@ -81,7 +81,7 @@ func Plan(cfg *config.Config, state State, now time.Time) Result {
 		if a.Disabled {
 			continue
 		}
-		sched, err := config.CronParser.Parse(a.Cron)
+		sched, err := config.ParseCron(a.Cron)
 		if err != nil {
 			// Load diagnoses this, so reaching here means the entry bypassed
 			// it. Skipping beats guessing at a schedule.
@@ -93,7 +93,7 @@ func Plan(cfg *config.Config, state State, now time.Time) Result {
 			res.State.LastOccurrence[a.Name] = now
 			res.Changed = true
 			res.Decisions = append(res.Decisions, Decision{
-				Kind: Register, Automation: a, At: sched.Next(now),
+				Kind: Register, Automation: a, At: next(sched, now),
 			})
 			continue
 		}
@@ -148,14 +148,14 @@ func Plan(cfg *config.Config, state State, now time.Time) Result {
 // due reports the most recent occurrence at or before now, how many earlier
 // occurrences were skipped along the way, and whether anything is due at all.
 func due(sched cron.Schedule, last, now time.Time) (occ time.Time, skipped int, ok bool) {
-	next := sched.Next(last)
-	if next.After(now) {
+	first := next(sched, last)
+	if first.IsZero() || first.After(now) {
 		return time.Time{}, 0, false
 	}
-	occ = next
+	occ = first
 	for {
-		n := sched.Next(occ)
-		if n.After(now) {
+		n := next(sched, occ)
+		if n.IsZero() || n.After(now) {
 			break
 		}
 		skipped++
@@ -164,14 +164,75 @@ func due(sched cron.Schedule, last, now time.Time) (occ time.Time, skipped int, 
 	return occ, skipped, true
 }
 
+// next is when sched comes due after t. robfig/cron walks wall-clock fields
+// in the schedule's zone, so on the night the clocks go back, 02:30 matches
+// twice, an hour apart, and a daily 02:30 run fired twice (Vienna, 25 Oct).
+// Like classic cron, a schedule with a fixed hour comes due once: the second
+// pass through a wall-clock time it already had is skipped. One with a * in
+// the hour field (every hour, every 30 minutes) keeps running by real time.
+func next(sched cron.Schedule, t time.Time) time.Time {
+	n := sched.Next(t)
+	for !n.IsZero() && repeated(sched, n) {
+		n = sched.Next(n)
+	}
+	return n
+}
+
+// starBit is how robfig/cron marks a field written with * (or */n).
+const starBit = 1 << 63
+
+// repeated reports whether n is a fixed-hour occurrence whose wall-clock time
+// already came due within the last three hours: the autumn clock change.
+func repeated(sched cron.Schedule, n time.Time) bool {
+	spec, ok := sched.(*cron.SpecSchedule)
+	if !ok || spec.Hour&starBit != 0 || spec.Location == nil {
+		return false
+	}
+	at := n.In(spec.Location)
+	earlier := n.Add(-3 * time.Hour)
+	if _, before := earlier.In(spec.Location).Zone(); before == offset(at) {
+		return false // no clock change in between: nothing can repeat
+	}
+	for t := sched.Next(earlier); !t.IsZero() && t.Before(n); t = sched.Next(t) {
+		if t.In(spec.Location).Format(time.DateTime) == at.Format(time.DateTime) {
+			return true
+		}
+	}
+	return false
+}
+
+func offset(t time.Time) int {
+	_, off := t.Zone()
+	return off
+}
+
 // NextRun is when this automation comes due next, for the board and the list.
-// The second return is false when the cron cannot be parsed.
+// The second return is false when the cron cannot be parsed or never comes
+// due.
 func NextRun(a config.Automation, from time.Time) (time.Time, bool) {
-	sched, err := config.CronParser.Parse(a.Cron)
-	if err != nil {
+	runs, err := Upcoming(a.Cron, from, 1)
+	if err != nil || len(runs) == 0 {
 		return time.Time{}, false
 	}
-	return sched.Next(from), true
+	return runs[0], true
+}
+
+// Upcoming is the next n times expr comes due after from, or fewer: robfig
+// answers a zero time once it finds no date within five years ("0 0 30 2 *"
+// never comes), and a zero time is not a run.
+func Upcoming(expr string, from time.Time, n int) ([]time.Time, error) {
+	sched, err := config.ParseCron(expr)
+	if err != nil {
+		return nil, err
+	}
+	out := []time.Time{}
+	for t := from; len(out) < n; {
+		if t = next(sched, t); t.IsZero() {
+			break
+		}
+		out = append(out, t)
+	}
+	return out, nil
 }
 
 // Collision is a moment when more than one automation comes due. Herdr is a
@@ -252,13 +313,13 @@ func CollidesWith(cfg *config.Config, cronExpr string, from time.Time) []string 
 // occurrences walks a cron expression over the horizon. An invalid expression
 // yields nothing: diagnosing it is Load's job, not this report's.
 func occurrences(expr string, from time.Time) []time.Time {
-	sched, err := config.CronParser.Parse(expr)
+	sched, err := config.ParseCron(expr)
 	if err != nil {
 		return nil
 	}
 	deadline := from.Add(horizon)
 	var out []time.Time
-	for t := sched.Next(from); !t.After(deadline) && len(out) < maxOccurrences; t = sched.Next(t) {
+	for t := next(sched, from); !t.After(deadline) && len(out) < maxOccurrences; t = next(sched, t) {
 		out = append(out, t)
 	}
 	return out

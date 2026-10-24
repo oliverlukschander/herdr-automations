@@ -19,6 +19,7 @@ import (
 	"github.com/DnzzL/herdr-automations/internal/history"
 	"github.com/DnzzL/herdr-automations/internal/host"
 	"github.com/DnzzL/herdr-automations/internal/notify"
+	"github.com/DnzzL/herdr-automations/internal/output"
 	"github.com/DnzzL/herdr-automations/internal/report"
 )
 
@@ -55,25 +56,90 @@ func (r *Runner) Busy() bool {
 // the 9:00 run is still working at 10:00, the 10:00 occurrence is dropped and
 // recorded as such.
 func (r *Runner) Run(a config.Automation, trigger history.Trigger) error {
-	if _, busy := r.inFlight.LoadOrStore(a.Name, true); busy {
-		r.record(history.NewID(a.Name, ""), a.Name, trigger, history.StatusSkipped, host.Session{},
-			"previous run still in flight")
-		return fmt.Errorf("%s: previous run still in flight, skipped", a.Name)
+	return r.RunAs(history.NewID(a.Name, ""), a, trigger)
+}
+
+// RunAs is Run under an ID chosen beforehand: a run-now request hands its ID
+// back to the app at once, and the app looks the run up by it. A skipped
+// request is recorded under that ID too, so the app learns it was skipped.
+func (r *Runner) RunAs(id string, a config.Automation, trigger history.Trigger) error {
+	t, err := r.claim(id, a, trigger, false)
+	if err != nil {
+		return err
 	}
 	defer r.inFlight.Delete(a.Name)
+	return r.carryOut(t, a)
+}
 
-	id := history.NewID(a.Name, "")
-	r.record(id, a.Name, trigger, history.StatusScheduled, host.Session{}, "")
+// Start is RunAs for the daemon: it returns as soon as the run is claimed and
+// its first record written, and carries it out in the background. Claiming
+// before returning is the point: once Start returns, the run is in Busy (a
+// re-exec on upgrade waits for it) and in the history (the app can see it),
+// with no moment between where it is neither.
+func (r *Runner) Start(id string, a config.Automation, trigger history.Trigger) {
+	r.start(id, a, trigger, false)
+}
 
+// StartRequested is Start for a run-now request, which must not run without
+// a record: the request is the app's only other trace of the run, and the
+// daemon clears it once the run is on record. When the history cannot be
+// written (a full disk), nothing runs and the error says so; the request
+// waits for the next tick. A skipped request is done, once that is recorded.
+func (r *Runner) StartRequested(id string, a config.Automation) error {
+	return r.start(id, a, history.TriggerManual, true)
+}
+
+// ErrNotRecorded means a run was not started because its first record could
+// not be written.
+var ErrNotRecorded = errors.New("the run could not be recorded")
+
+func (r *Runner) start(id string, a config.Automation, trigger history.Trigger, onRecord bool) error {
+	t, err := r.claim(id, a, trigger, onRecord)
+	if err != nil {
+		log.Printf("run %s: %v", a.Name, err)
+		if errors.Is(err, ErrNotRecorded) {
+			return err
+		}
+		return nil
+	}
+	go func() {
+		defer r.inFlight.Delete(a.Name)
+		if err := r.carryOut(t, a); err != nil {
+			log.Printf("run %s: %v", a.Name, err)
+		}
+	}()
+	return nil
+}
+
+// claim takes the automation's in-flight slot and records the run as
+// scheduled, or records it skipped when a run of it is still going. With
+// onRecord, a record that cannot be written stops the run before it starts.
+func (r *Runner) claim(id string, a config.Automation, trigger history.Trigger, onRecord bool) (*attempt, error) {
+	t := &attempt{id: id, a: a, trigger: trigger}
+	if _, busy := r.inFlight.LoadOrStore(a.Name, true); busy {
+		if err := r.record(t, history.StatusSkipped, "previous run still in flight"); err != nil && onRecord {
+			return nil, fmt.Errorf("%w: %v", ErrNotRecorded, err)
+		}
+		return nil, fmt.Errorf("%s: previous run still in flight, skipped", a.Name)
+	}
+	if err := r.record(t, history.StatusScheduled, ""); err != nil && onRecord {
+		r.inFlight.Delete(a.Name)
+		return nil, fmt.Errorf("%w: %v", ErrNotRecorded, err)
+	}
+	return t, nil
+}
+
+// carryOut is the run after its claim: provisioning, the work, the outcome.
+func (r *Runner) carryOut(t *attempt, a config.Automation) error {
 	if a.CloseWhenNoAction {
 		dir := filepath.Join(config.StateDir(), "reports")
 		if err := os.MkdirAll(dir, 0700); err != nil {
-			r.record(id, a.Name, trigger, history.StatusFailed, host.Session{}, err.Error())
+			r.record(t, history.StatusFailed, err.Error())
 			return err
 		}
 		dir, err := os.MkdirTemp(dir, "run-")
 		if err != nil {
-			r.record(id, a.Name, trigger, history.StatusFailed, host.Session{}, err.Error())
+			r.record(t, history.StatusFailed, err.Error())
 			return err
 		}
 		a.ReportPath = filepath.Join(dir, "result.json")
@@ -92,29 +158,78 @@ Do not close your tab yourself. Do not ask a question merely to keep it open. Th
 	}
 	session, err := r.host.Provision(a)
 	if err != nil {
-		r.record(id, a.Name, trigger, history.StatusFailed,
-			host.Session{WorkspaceID: session.WorkspaceID}, err.Error())
+		t.session = host.Session{WorkspaceID: session.WorkspaceID}
+		r.record(t, history.StatusFailed, err.Error())
 		return err
 	}
-	r.record(id, a.Name, trigger, history.StatusRunning, session, "")
+	t.session = session
+	r.record(t, history.StatusRunning, "")
 
 	timeout := time.Duration(a.TimeoutMinutes) * time.Minute
-	if err := r.host.Do(session, a, timeout); err != nil {
+	err = r.host.Do(session, a, timeout, func(ag host.Agent) {
+		known := t.agent.SessionID != ""
+		t.agent = ag
+		if !known {
+			// Written at once, so the app can follow the transcript live.
+			r.record(t, history.StatusRunning, "")
+		}
+	})
+	r.capture(t)
+	if err != nil {
 		if rep, readErr := report.Read(a.ReportPath); a.CloseWhenNoAction && readErr == nil {
 			err = fmt.Errorf("%w; %s", err, rep.Summary)
 		}
-		r.record(id, a.Name, trigger, statusFor(err), session, err.Error())
+		r.record(t, statusFor(err), err.Error())
 		return err
 	}
 	if a.CloseWhenNoAction {
-		if err := r.complete(id, a, trigger, session); err != nil {
-			r.record(id, a.Name, trigger, history.StatusFailed, session, err.Error())
+		if err := r.complete(t, a); err != nil {
+			r.record(t, history.StatusFailed, err.Error())
 			return err
 		}
 		return nil
 	}
-	r.record(id, a.Name, trigger, history.StatusDone, session, "")
+	r.record(t, history.StatusDone, "")
 	return nil
+}
+
+// attempt is one run as the history sees it: every record written about it
+// carries everything known about it so far.
+type attempt struct {
+	id      string
+	a       config.Automation
+	trigger history.Trigger
+	session host.Session
+	agent   host.Agent
+}
+
+// base is the record every status of the run starts from.
+func (t *attempt) base(st history.Status) history.Record {
+	rec := history.Record{
+		RunID: t.id, Automation: t.a.Name, Trigger: t.trigger, Status: st, At: time.Now(),
+		WorkspaceID: t.session.WorkspaceID, PaneID: t.session.PaneID, RunnerPID: os.Getpid(),
+		Workflow: t.a.Workflow, SessionID: t.agent.SessionID, SessionSource: t.agent.SessionSource, CWD: t.agent.CWD,
+	}
+	if t.a.Workflow == "" {
+		rec.Agent, rec.Model = t.a.Agent, t.a.Model
+	}
+	return rec
+}
+
+// capture keeps the run's last screen of output. It runs once the work is
+// over and before anything closes the tab: for a workflow run it is the only
+// output there is, and an agent run's tab may be about to close.
+func (r *Runner) capture(t *attempt) {
+	if t.session.PaneID == "" {
+		return
+	}
+	text, err := r.host.Capture(t.session)
+	if err != nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	if err := output.Save(t.id, text); err != nil {
+		log.Printf("%s: keeping the pane's output: %v", t.a.Name, err)
+	}
 }
 
 // statusFor decides how a run that ended in err is remembered. Only a workspace
@@ -129,11 +244,9 @@ func statusFor(err error) history.Status {
 // record is the only writer of run history, which is what makes it the only
 // caller of notify: the two cannot drift apart, and a future status inherits
 // its notification for free without runner filtering anything.
-func (r *Runner) record(id, name string, trigger history.Trigger, st history.Status, s host.Session, errMsg string) {
-	rec := history.Record{
-		RunID: id, Automation: name, Trigger: trigger, Status: st, At: time.Now(),
-		WorkspaceID: s.WorkspaceID, PaneID: s.PaneID, Error: errMsg,
-	}
+func (r *Runner) record(t *attempt, st history.Status, errMsg string) error {
+	rec := t.base(st)
+	rec.Error = errMsg
 	if st == history.StatusFailed {
 		required := true
 		rec.UserActionRequired = &required
@@ -143,11 +256,12 @@ func (r *Runner) record(id, name string, trigger history.Trigger, st history.Sta
 	if err != nil {
 		log.Printf("history append failed: %v", err)
 	}
-	r.notifier.Outcome(name, st, errMsg)
+	r.notifier.Outcome(t.a.Name, st, errMsg)
+	return err
 }
 
 // Persist the report before closing anything; unreadable reports never authorize closure.
-func (r *Runner) complete(id string, a config.Automation, trigger history.Trigger, s host.Session) error {
+func (r *Runner) complete(t *attempt, a config.Automation) error {
 	rep, err := report.Read(a.ReportPath)
 	if err != nil {
 		return fmt.Errorf("completion report missing or invalid; inspect the open tab: %w", err)
@@ -156,8 +270,8 @@ func (r *Runner) complete(id string, a config.Automation, trigger history.Trigge
 	if *rep.UserActionRequired {
 		status = history.StatusNeedsAction
 	}
-	rec := history.Record{RunID: id, Automation: a.Name, Trigger: trigger, Status: status, At: time.Now(),
-		WorkspaceID: s.WorkspaceID, PaneID: s.PaneID, UserActionRequired: rep.UserActionRequired, Summary: rep.Summary, ReportPath: a.ReportPath}
+	rec := t.base(status)
+	rec.UserActionRequired, rec.Summary, rec.ReportPath = rep.UserActionRequired, rep.Summary, a.ReportPath
 	if err := history.Append(rec); err != nil {
 		return fmt.Errorf("cannot preserve completion report; tab kept open: %w", err)
 	}
@@ -166,7 +280,7 @@ func (r *Runner) complete(id string, a config.Automation, trigger history.Trigge
 	if *rep.UserActionRequired {
 		return nil
 	}
-	if err := r.host.CloseTab(s, a); err != nil {
+	if err := r.host.CloseTab(t.session, a); err != nil {
 		return fmt.Errorf("no work remains but the tab could not be safely closed: %w", err)
 	}
 	rec.TabClosed = true
