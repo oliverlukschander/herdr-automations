@@ -63,15 +63,47 @@ func (r *Runner) Run(a config.Automation, trigger history.Trigger) error {
 // back to the app at once, and the app looks the run up by it. A skipped
 // request is recorded under that ID too, so the app learns it was skipped.
 func (r *Runner) RunAs(id string, a config.Automation, trigger history.Trigger) error {
+	t, err := r.claim(id, a, trigger)
+	if err != nil {
+		return err
+	}
+	defer r.inFlight.Delete(a.Name)
+	return r.carryOut(t, a)
+}
+
+// Start is RunAs for the daemon: it returns as soon as the run is claimed and
+// its first record written, and carries it out in the background. Claiming
+// before returning is the point: once Start returns, the run is in Busy (a
+// re-exec on upgrade waits for it) and in the history (the app can see it),
+// with no moment between where it is neither.
+func (r *Runner) Start(id string, a config.Automation, trigger history.Trigger) {
+	t, err := r.claim(id, a, trigger)
+	if err != nil {
+		log.Printf("run %s: %v", a.Name, err)
+		return
+	}
+	go func() {
+		defer r.inFlight.Delete(a.Name)
+		if err := r.carryOut(t, a); err != nil {
+			log.Printf("run %s: %v", a.Name, err)
+		}
+	}()
+}
+
+// claim takes the automation's in-flight slot and records the run as
+// scheduled, or records it skipped when a run of it is still going.
+func (r *Runner) claim(id string, a config.Automation, trigger history.Trigger) (*attempt, error) {
 	t := &attempt{id: id, a: a, trigger: trigger}
 	if _, busy := r.inFlight.LoadOrStore(a.Name, true); busy {
 		r.record(t, history.StatusSkipped, "previous run still in flight")
-		return fmt.Errorf("%s: previous run still in flight, skipped", a.Name)
+		return nil, fmt.Errorf("%s: previous run still in flight, skipped", a.Name)
 	}
-	defer r.inFlight.Delete(a.Name)
-
 	r.record(t, history.StatusScheduled, "")
+	return t, nil
+}
 
+// carryOut is the run after its claim: provisioning, the work, the outcome.
+func (r *Runner) carryOut(t *attempt, a config.Automation) error {
 	if a.CloseWhenNoAction {
 		dir := filepath.Join(config.StateDir(), "reports")
 		if err := os.MkdirAll(dir, 0700); err != nil {

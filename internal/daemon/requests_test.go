@@ -135,3 +135,58 @@ func TestTheSweepClosesRunsWhoseProcessDied(t *testing.T) {
 		t.Errorf("toasts = %d, want exactly one", sink.toasts)
 	}
 }
+
+// heldHost works until released.
+type heldHost struct {
+	quietHost
+	release chan struct{}
+}
+
+func (h heldHost) Do(host.Session, config.Automation, time.Duration, func(host.Agent)) error {
+	<-h.release
+	return nil
+}
+
+// Review finding 9: once takeRequests returns, a request's run is in the
+// history and counts as in flight (a re-exec waits for it); there is no
+// moment where the app finds neither the request nor the run.
+func TestATakenRequestIsAlreadyARun(t *testing.T) {
+	sandboxWith(t, oneAutomation)
+	id := history.NewID("[KAN] Mails -> Kaneo", "")
+	request.Write(request.Request{RunID: id, Automation: "[KAN] Mails -> Kaneo", RequestedAt: time.Now()})
+	h := heldHost{release: make(chan struct{})}
+	runs := runner.New(h)
+
+	takeRequests(runs, notify.With(&fakeSink{}), time.Now())
+
+	recs, _ := history.Timeline(id)
+	if len(recs) == 0 || recs[0].Status != history.StatusScheduled {
+		t.Errorf("no record yet: %+v", recs)
+	}
+	if request.Find(id) != nil {
+		t.Error("the request is still waiting")
+	}
+	if !runs.Busy() {
+		t.Error("the run does not count as in flight")
+	}
+	close(h.release)
+	settled(t, id)
+}
+
+// A request whose run already has a record (the daemon died between starting
+// it and clearing the request) is cleared, never run a second time.
+func TestARequestIsNeverRunTwice(t *testing.T) {
+	sandboxWith(t, oneAutomation)
+	id := history.NewID("[KAN] Mails -> Kaneo", "")
+	request.Write(request.Request{RunID: id, Automation: "[KAN] Mails -> Kaneo", RequestedAt: time.Now()})
+	history.Append(history.Record{RunID: id, Automation: "[KAN] Mails -> Kaneo", Status: history.StatusDone, At: time.Now()})
+
+	takeRequests(runner.New(quietHost{}), notify.With(&fakeSink{}), time.Now())
+
+	if recs, _ := history.Timeline(id); len(recs) != 1 {
+		t.Errorf("run again: %+v", recs)
+	}
+	if request.Find(id) != nil {
+		t.Error("the request was not cleared")
+	}
+}

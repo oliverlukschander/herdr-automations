@@ -71,23 +71,13 @@ func Write(r Request) error {
 	return os.Rename(tmp.Name(), fileFor(r.RunID))
 }
 
-// Take removes and returns every waiting request, oldest first. It removes
-// each file before handing it over: a daemon that dies mid-run must not start
-// the same run again when it comes back.
-func Take() ([]Request, error) {
-	all, err := read()
-	if err != nil {
-		return nil, err
-	}
-	var out []Request
-	for _, r := range all {
-		if err := os.Remove(fileFor(r.RunID)); err != nil {
-			continue // not ours to run if we cannot claim it
-		}
-		out = append(out, r)
-	}
-	return out, nil
-}
+// Pending returns every waiting request, oldest first. The daemon removes
+// each with Remove once its run has a record: removing first left a moment
+// where the app found neither a request nor a run.
+func Pending() ([]Request, error) { return read() }
+
+// Remove clears a request that has been dealt with.
+func Remove(runID string) { os.Remove(fileFor(runID)) }
 
 // Find returns the waiting request with this run ID, or nil.
 func Find(runID string) *Request {

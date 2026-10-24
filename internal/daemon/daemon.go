@@ -32,8 +32,8 @@ func Run() error {
 	log.SetPrefix("[herdr-automations] ")
 
 	// Listen before taking the lock: the lock is what tells `run --detach`
-	// there is a daemon to wake, and SIGUSR1 kills a process that is not
-	// listening for it.
+	// there is a daemon to wake, and a wake-up sent before anyone listens is
+	// dropped; the request would then wait for the next tick, 30 s late.
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigs)
@@ -86,8 +86,12 @@ func Run() error {
 // takeRequests starts the runs asked for with `run --detach`, under the IDs
 // the CLI already handed out. A request that waited past request.MaxWait is
 // dropped and recorded missed: occurrences are dropped, never queued.
+//
+// A request's file goes only once its run has a record, so the app never
+// finds neither; and a request whose run already has one (the daemon died in
+// between) is just cleared, never run twice.
 func takeRequests(runs *runner.Runner, n *notify.Notifier, now time.Time) {
-	reqs, err := request.Take()
+	reqs, err := request.Pending()
 	if err != nil {
 		log.Printf("reading run-now requests: %v", err)
 		return
@@ -98,6 +102,12 @@ func takeRequests(runs *runner.Runner, n *notify.Notifier, now time.Time) {
 	cfg, cfgErr := config.Load()
 	var missed []string
 	for _, q := range reqs {
+		if recs, err := history.Timeline(q.RunID); err != nil || len(recs) > 0 {
+			if err == nil {
+				request.Remove(q.RunID) // taken before; the run is under way or done
+			}
+			continue
+		}
 		rec := history.Record{RunID: q.RunID, Automation: q.Automation, Trigger: history.TriggerManual, At: now}
 		var a *config.Automation
 		if cfgErr == nil {
@@ -119,16 +129,15 @@ func takeRequests(runs *runner.Runner, n *notify.Notifier, now time.Time) {
 			}
 		default:
 			log.Printf("%s: running now, as requested", q.Automation)
-			go func(id string, a config.Automation) {
-				if err := runs.RunAs(id, a, history.TriggerManual); err != nil {
-					log.Printf("run %s: %v", a.Name, err)
-				}
-			}(q.RunID, *a)
+			runs.Start(q.RunID, *a, history.TriggerManual)
+			request.Remove(q.RunID)
 			continue
 		}
 		if err := history.Append(rec); err != nil {
 			log.Printf("history append failed: %v", err)
+			continue // keep the request: the next tick records it again
 		}
+		request.Remove(q.RunID)
 	}
 	n.Tick(missed, nil)
 }
@@ -187,11 +196,7 @@ func evaluate(state *scheduleState, runs *runner.Runner, n *notify.Notifier) {
 				log.Printf("%s: running %s late", d.Automation.Name,
 					time.Since(d.At).Round(time.Minute))
 			}
-			go func(a config.Automation, trigger history.Trigger) {
-				if err := runs.Run(a, trigger); err != nil {
-					log.Printf("run %s: %v", a.Name, err)
-				}
-			}(d.Automation, d.Trigger)
+			runs.Start(history.NewID(d.Automation.Name, ""), d.Automation, d.Trigger)
 		}
 	}
 	n.Tick(missed, invalid)
