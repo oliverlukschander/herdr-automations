@@ -79,10 +79,16 @@ func main() {
 	var err error
 	switch os.Args[1] {
 	case "daemon":
-		if len(os.Args) > 2 && os.Args[2] == "start" {
-			err = daemonStartCmd(os.Args[3:])
-		} else {
+		switch mode, rest := daemonMode(os.Args[2:]); mode {
+		case "run":
 			err = daemon.Run()
+		case "start":
+			err = daemonStartCmd(rest)
+		default:
+			err = fmt.Errorf("usage: herdr-automations daemon, or daemon start [--json]")
+			if slices.Contains(os.Args, "--json") || slices.Contains(os.Args, "-json") {
+				emit(nil, usageError(err))
+			}
 		}
 	case "add":
 		err = wizard.Run()
@@ -379,6 +385,20 @@ func oneName(cmd string, args []string, fs *flag.FlagSet) (string, error) {
 		return "", err
 	}
 	return rest[0], nil
+}
+
+// daemonMode decides what `daemon <args>` is. The scheduler itself runs only
+// when asked with nothing else at all: `daemon --json start`, flags first,
+// once started a scheduler inside the SSH session that asked for one.
+func daemonMode(args []string) (mode string, rest []string) {
+	switch {
+	case len(args) == 0:
+		return "run", nil
+	case slices.Contains(args, "start"):
+		i := slices.Index(args, "start")
+		return "start", slices.Concat(args[:i], args[i+1:])
+	}
+	return "usage", nil
 }
 
 // daemonStartCmd starts a scheduler that is not running, through Herdr, so it
