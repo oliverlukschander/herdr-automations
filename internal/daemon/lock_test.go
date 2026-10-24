@@ -190,3 +190,19 @@ func TestAStartingDaemonWaitsOutAProbe(t *testing.T) {
 	}
 	release()
 }
+
+// The startup hook after a server restart and the start-scheduler action both
+// find the daemon that is already working. That is not an error.
+func TestASecondDaemonExitsQuietly(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", dir)
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", t.TempDir())
+	release, err := acquireLock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if err := Run(); err != nil {
+		t.Errorf("Run with the lock held = %v, want nil", err)
+	}
+}

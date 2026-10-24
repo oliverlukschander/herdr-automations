@@ -290,6 +290,13 @@ func (Client) WorkspaceExists(id string) (bool, error) {
 	return err == nil, err
 }
 
+// InvokeAction asks the Herdr server to run a plugin action, by its qualified
+// id (plugin.id.action). The server spawns it with the plugin's environment
+// and returns once it has started, not once it has finished.
+func (Client) InvokeAction(qualifiedID string) error {
+	return run(nil, "plugin", "action", "invoke", qualifiedID)
+}
+
 // ErrGone means the run's workspace no longer exists — the expected outcome
 // once you've reviewed and closed it, not a failure worth a stack trace.
 var ErrGone = errors.New("workspace already closed")

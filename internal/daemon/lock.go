@@ -44,7 +44,7 @@ func acquireLock() (release func(), err error) {
 		}
 		if !errors.Is(err, syscall.EWOULDBLOCK) || time.Now().After(deadline) {
 			f.Close()
-			return nil, fmt.Errorf("another daemon is already running (pid %s)", holderPID(path))
+			return nil, fmt.Errorf("%w (pid %s)", ErrRunning, holderPID(path))
 		}
 	}
 
@@ -62,6 +62,9 @@ func acquireLock() (release func(), err error) {
 		releaseFile(f)
 	}, nil
 }
+
+// ErrRunning means another daemon holds the lock.
+var ErrRunning = errors.New("another daemon is already running")
 
 // lockWait is how long a starting daemon keeps asking for a lock somebody
 // holds; far longer than a Probe holds it, far shorter than any real daemon.

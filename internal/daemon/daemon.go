@@ -7,6 +7,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -35,10 +36,18 @@ func Run() error {
 	// listening for it.
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigs)
 	wake := make(chan os.Signal, 1)
 	signal.Notify(wake, syscall.SIGUSR1)
+	defer signal.Stop(wake)
 
 	release, err := acquireLock()
+	if errors.Is(err, ErrRunning) {
+		// Not a failure: the startup hook after a server restart, and the
+		// start-scheduler action, both find the one that is already working.
+		log.Printf("%v; nothing to do", err)
+		return nil
+	}
 	if err != nil {
 		return err
 	}

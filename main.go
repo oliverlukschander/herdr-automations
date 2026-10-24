@@ -31,6 +31,8 @@ const usage = `herdr-automations — cron for your Herdr agents
 
 Usage:
   herdr-automations daemon           Run the scheduler (started by the plugin startup hook)
+  herdr-automations daemon start [--json]
+                                     Have Herdr start the scheduler if none is running
   herdr-automations add              Interactive wizard: create an automation
   herdr-automations list [--json]    List automations with schedule and last run
   herdr-automations run <name>       Trigger an automation now, in this process
@@ -68,7 +70,11 @@ func main() {
 	var err error
 	switch os.Args[1] {
 	case "daemon":
-		err = daemon.Run()
+		if len(os.Args) > 2 && os.Args[2] == "start" {
+			err = daemonStartCmd(os.Args[3:])
+		} else {
+			err = daemon.Run()
+		}
 	case "add":
 		err = wizard.Run()
 	case "list":
@@ -364,6 +370,40 @@ func oneName(cmd string, args []string, fs *flag.FlagSet) (string, error) {
 		return "", err
 	}
 	return rest[0], nil
+}
+
+// daemonStartCmd starts a scheduler that is not running, through Herdr, so it
+// is not left as a child of the SSH session that asked. A running one is left
+// alone.
+func daemonStartCmd(args []string) error {
+	fs, asJSON := newFlags("daemon start", args)
+	rest, err := parseArgs(fs, args)
+	if err == nil && len(rest) > 0 {
+		err = fmt.Errorf("daemon start takes no arguments")
+	}
+	if asJSON {
+		if err != nil {
+			emit(nil, usageError(err))
+		}
+		emit(api.StartDaemon())
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	res, err := api.StartDaemon()
+	if err != nil {
+		return err
+	}
+	verb := "Already running"
+	if res.Started {
+		verb = "Started"
+	}
+	if res.Daemon.PID != nil {
+		verb += fmt.Sprintf(", pid %d", *res.Daemon.PID)
+	}
+	fmt.Println(verb)
+	return nil
 }
 
 // detachCmd is `run <name> --detach`: the daemon does the run, so it outlives

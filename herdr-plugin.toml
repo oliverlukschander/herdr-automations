@@ -22,3 +22,13 @@ id = "board"
 title = "Automations"
 placement = "overlay"
 command = ["sh", "scripts/run.sh", "pane"]
+
+# Starts the scheduler when none is running: `herdr-automations daemon start`
+# invokes it from a plain SSH session, so the daemon is spawned by the Herdr
+# server with the plugin's environment, as the startup hook would. A live
+# daemon is never replaced; this one exits quietly when the lock is held.
+[[actions]]
+id = "start-scheduler"
+title = "Automations: start the scheduler"
+contexts = []
+command = ["sh", "scripts/run.sh", "daemon"]
