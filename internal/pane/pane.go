@@ -183,8 +183,12 @@ func load() model {
 		m.err = err
 		return m
 	}
+	latest, _ := history.Latest()
 	for _, a := range cfg.Automations {
-		last, _ := history.LastRun(a.Name)
+		var last *history.Record
+		if r, ok := latest[a.Name]; ok {
+			last = &r
+		}
 		m.rows = append(m.rows, row{name: a.Name, line: a.Line, auto: a, last: last})
 	}
 	// The entries that did not load go on the board too. A typo used to blank

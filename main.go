@@ -5,10 +5,13 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/DnzzL/herdr-automations/internal/api"
 	"github.com/DnzzL/herdr-automations/internal/cleanup"
 	"github.com/DnzzL/herdr-automations/internal/config"
 	"github.com/DnzzL/herdr-automations/internal/daemon"
@@ -29,11 +32,12 @@ const usage = `herdr-automations — cron for your Herdr agents
 Usage:
   herdr-automations daemon           Run the scheduler (started by the plugin startup hook)
   herdr-automations add              Interactive wizard: create an automation
-  herdr-automations list             List automations with schedule and last run
+  herdr-automations list [--json]    List automations with schedule and last run
   herdr-automations run <name>       Trigger an automation now
   herdr-automations pause <name>     Stop scheduling an automation
   herdr-automations resume <name>    Resume a paused automation
-  herdr-automations history [name]   Show recent runs and action reports
+  herdr-automations history [name] [--limit N] [--run ID] [--json]
+                                     Show recent runs and action reports
   herdr-automations report --file PATH --action yes|no --summary TEXT
   herdr-automations cleanup          Remove run worktrees whose work already landed
   herdr-automations pane             Interactive board (used by the Herdr pane)
@@ -42,6 +46,8 @@ Usage:
 
 Config:  %s
 History: %s
+
+--json prints one JSON object for the Orchestrator app (schema in internal/api).
 `
 
 func main() {
@@ -49,6 +55,7 @@ func main() {
 		fmt.Printf(usage, config.Path(), config.StateDir())
 		os.Exit(2)
 	}
+	api.Version = Version
 	var err error
 	switch os.Args[1] {
 	case "daemon":
@@ -56,7 +63,7 @@ func main() {
 	case "add":
 		err = wizard.Run()
 	case "list":
-		err = list()
+		err = listCmd(os.Args[2:])
 	case "cleanup":
 		err = cleanupCmd(os.Args[2:])
 	case "report":
@@ -68,11 +75,7 @@ func main() {
 	case "resume":
 		err = pauseCmd(os.Args[2:], false)
 	case "history":
-		name := ""
-		if len(os.Args) > 2 {
-			name = os.Args[2]
-		}
-		err = showHistory(name)
+		err = historyCmd(os.Args[2:])
 	case "pane":
 		err = pane.Run()
 	case "install-skill":
@@ -93,6 +96,66 @@ func main() {
 	}
 }
 
+// newFlags is a flag set for a subcommand that may be asked for --json. JSON
+// mode is read off the raw arguments rather than the parsed flag: a parse
+// error that stops before reaching --json is still owed to the app as JSON on
+// stdout, and the flag package must not print its own complaint first.
+func newFlags(name string, args []string) (*flag.FlagSet, bool) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.Bool("json", false, "print one JSON object for the Orchestrator app")
+	asJSON := slices.Contains(args, "--json") || slices.Contains(args, "-json")
+	if asJSON {
+		fs.SetOutput(io.Discard)
+	}
+	return fs, asJSON
+}
+
+// parseArgs lets flags and positional arguments come in any order. The app
+// builds these command lines; Go's flag package would otherwise stop at the
+// first name and read every flag after it as another name.
+func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return positional, nil
+		}
+		positional = append(positional, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
+}
+
+// emit prints a --json response and exits 1 on failure, with nothing on
+// stderr: the app reads stdout only.
+func emit(res api.Result, err error) {
+	if !api.Emit(os.Stdout, res, err) {
+		os.Exit(1)
+	}
+}
+
+func usageError(err error) error { return api.Fail(api.CodeUsage, "%v", err) }
+
+func listCmd(args []string) error {
+	fs, asJSON := newFlags("list", args)
+	rest, err := parseArgs(fs, args)
+	if err == nil && len(rest) > 0 {
+		err = fmt.Errorf("list takes no arguments")
+	}
+	if asJSON {
+		if err != nil {
+			emit(nil, usageError(err))
+		}
+		emit(api.List(time.Now()))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return list()
+}
+
 func list() error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -108,9 +171,10 @@ func list() error {
 	}
 	fmt.Printf("%-24s %-16s %-9s %-8s %-13s %s\n",
 		"NAME", "CRON", "WORKSPACE", "AGENT", "MODEL", "LAST RUN")
+	latest, _ := history.Latest()
 	for _, a := range cfg.Automations {
 		last := "never"
-		if r, _ := history.LastRun(a.Name); r != nil {
+		if r, ok := latest[a.Name]; ok {
 			last = fmt.Sprintf("%s (%s)", r.Status, r.At.Format("02 Jan 15:04"))
 		}
 		name := a.Name
@@ -297,11 +361,53 @@ func pauseCmd(args []string, disabled bool) error {
 	return nil
 }
 
-func showHistory(name string) error {
-	runs, err := history.Runs(name, 30)
+func historyCmd(args []string) error {
+	fs, asJSON := newFlags("history", args)
+	limit := fs.Int("limit", 30, "how many runs, newest first (0 = all)")
+	runID := fs.String("run", "", "one run and every record of it")
+	rest, err := parseArgs(fs, args)
+	switch {
+	case err != nil:
+	case len(rest) > 1:
+		err = fmt.Errorf("history takes at most one automation name")
+	case *runID != "" && len(rest) > 0:
+		err = fmt.Errorf("--run takes no automation name")
+	case *limit < 0:
+		err = fmt.Errorf("--limit must be 0 or more")
+	}
+	name := ""
+	if len(rest) == 1 {
+		name = rest[0]
+	}
+	if asJSON {
+		if err != nil {
+			emit(nil, usageError(err))
+		}
+		if *runID != "" {
+			emit(api.RunTimeline(*runID))
+		} else {
+			emit(api.History(name, *limit))
+		}
+		return nil
+	}
 	if err != nil {
 		return err
 	}
+	if *runID != "" {
+		recs, err := history.Timeline(*runID)
+		if err != nil {
+			return err
+		}
+		return printRuns(recs)
+	}
+	runs, err := history.Runs(name, *limit)
+	if err != nil {
+		return err
+	}
+	return printRuns(runs)
+}
+
+func printRuns(runs []history.Record) error {
 	if len(runs) == 0 {
 		fmt.Println("No runs yet.")
 		return nil
