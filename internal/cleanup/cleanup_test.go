@@ -2,7 +2,9 @@ package cleanup
 
 import (
 	"errors"
+	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 
@@ -25,8 +27,16 @@ func repoWithBranches(t *testing.T) string {
 		{"-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--allow-empty", "-m", "work"},
 		{"checkout", "main"},
 	}
+	// git -C does not override an inherited GIT_DIR. Under `git rebase --exec`
+	// that is set, and this script then re-initialised the real repository
+	// (core.bare = true), branched in it and moved its HEAD.
+	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		return strings.HasPrefix(kv, "GIT_DIR=") || strings.HasPrefix(kv, "GIT_WORK_TREE=") ||
+			strings.HasPrefix(kv, "GIT_INDEX_FILE=")
+	})
 	for _, args := range script {
 		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = env
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
