@@ -45,7 +45,7 @@ func Run() error {
 	var cronExpr string
 	for {
 		cronExpr = ask(in, "Cron (5 fields or @daily/@hourly)", "0 9 * * 1-5")
-		sched, err := config.CronParser.Parse(cronExpr)
+		sched, err := config.ParseCron(cronExpr)
 		if err != nil {
 			fmt.Printf("  invalid: %v\n", err)
 			continue

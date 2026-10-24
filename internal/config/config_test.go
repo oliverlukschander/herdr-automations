@@ -312,3 +312,15 @@ func TestExistingWorkspaceSurvivesConfigRoundTrip(t *testing.T) {
 		t.Fatalf("existing workspace was lost on save: %+v", a)
 	}
 }
+
+// A time zone with no schedule after it made robfig/cron slice out of range:
+// the daemon panicked on every load, and apply died without its JSON.
+func TestACronThatCrashesTheParserIsADiagnostic(t *testing.T) {
+	for _, expr := range []string{"CRON_TZ=Europe/Vienna", "TZ=Europe/Vienna", "CRON_TZ=", "TZ="} {
+		withConfig(t, "automations:\n  - name: a\n    cron: \""+expr+"\"\n    repo: /x\n    prompt: p\n")
+		cfg, err := Load()
+		if err != nil || len(cfg.Invalid) != 1 || !strings.Contains(cfg.Invalid[0].Message, "invalid cron") {
+			t.Errorf("%q: cfg=%+v err=%v", expr, cfg, err)
+		}
+	}
+}

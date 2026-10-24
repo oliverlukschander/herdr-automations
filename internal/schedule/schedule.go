@@ -81,7 +81,7 @@ func Plan(cfg *config.Config, state State, now time.Time) Result {
 		if a.Disabled {
 			continue
 		}
-		sched, err := config.CronParser.Parse(a.Cron)
+		sched, err := config.ParseCron(a.Cron)
 		if err != nil {
 			// Load diagnoses this, so reaching here means the entry bypassed
 			// it. Skipping beats guessing at a schedule.
@@ -167,7 +167,7 @@ func due(sched cron.Schedule, last, now time.Time) (occ time.Time, skipped int, 
 // NextRun is when this automation comes due next, for the board and the list.
 // The second return is false when the cron cannot be parsed.
 func NextRun(a config.Automation, from time.Time) (time.Time, bool) {
-	sched, err := config.CronParser.Parse(a.Cron)
+	sched, err := config.ParseCron(a.Cron)
 	if err != nil {
 		return time.Time{}, false
 	}
@@ -252,7 +252,7 @@ func CollidesWith(cfg *config.Config, cronExpr string, from time.Time) []string 
 // occurrences walks a cron expression over the horizon. An invalid expression
 // yields nothing: diagnosing it is Load's job, not this report's.
 func occurrences(expr string, from time.Time) []time.Time {
-	sched, err := config.CronParser.Parse(expr)
+	sched, err := config.ParseCron(expr)
 	if err != nil {
 		return nil
 	}

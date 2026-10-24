@@ -23,11 +23,24 @@ import (
 	"github.com/DnzzL/herdr-automations/internal/hostpath"
 )
 
-// CronParser accepts the standard 5-field crontab syntax plus descriptors
+// cronParser accepts the standard 5-field crontab syntax plus descriptors
 // like @daily. Shared by the daemon and the wizard preview.
-var CronParser = cron.NewParser(
+var cronParser = cron.NewParser(
 	cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor,
 )
+
+// ParseCron parses a cron expression, and never panics doing it. robfig/cron
+// v3 slices past the end of "CRON_TZ=Europe/Vienna" with nothing after the
+// zone: a typo in one automation took the whole daemon down, every 30 s,
+// and `apply` along with it.
+func ParseCron(expr string) (s cron.Schedule, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			s, err = nil, fmt.Errorf("cannot parse it (%v)", r)
+		}
+	}()
+	return cronParser.Parse(expr)
+}
 
 type Workspace string
 
@@ -139,7 +152,7 @@ func (a *Automation) validate() error {
 	if a.Cron == "" {
 		return fmt.Errorf("%s: missing cron", a.Name)
 	}
-	if _, err := CronParser.Parse(a.Cron); err != nil {
+	if _, err := ParseCron(a.Cron); err != nil {
 		return fmt.Errorf("%s: invalid cron %q: %w", a.Name, a.Cron, err)
 	}
 	if a.Repo == "" {

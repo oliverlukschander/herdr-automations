@@ -46,7 +46,7 @@ func only(t *testing.T, res Result) Decision {
 // ── due ─────────────────────────────────────────────────────────────
 
 func TestDueNotYet(t *testing.T) {
-	sched, _ := config.CronParser.Parse("0 9 * * 1") // Mondays at 09:00
+	sched, _ := config.ParseCron("0 9 * * 1") // Mondays at 09:00
 	_, _, ok := due(sched, at(t, "2026-08-10 09:00"), at(t, "2026-08-10 15:00"))
 	if ok {
 		t.Fatal("nothing should be due before the next Monday")
@@ -54,7 +54,7 @@ func TestDueNotYet(t *testing.T) {
 }
 
 func TestDueAfterSleepReturnsTheOccurrence(t *testing.T) {
-	sched, _ := config.CronParser.Parse("0 9 * * 1")
+	sched, _ := config.ParseCron("0 9 * * 1")
 	// Laptop asleep from Sunday evening; wakes Monday afternoon.
 	occ, skipped, ok := due(sched, at(t, "2026-08-09 20:00"), at(t, "2026-08-10 17:13"))
 	if !ok {
@@ -69,7 +69,7 @@ func TestDueAfterSleepReturnsTheOccurrence(t *testing.T) {
 }
 
 func TestDueCountsEveryMissedOccurrence(t *testing.T) {
-	sched, _ := config.CronParser.Parse("0 9 * * *") // daily at 09:00
+	sched, _ := config.ParseCron("0 9 * * *") // daily at 09:00
 	// Away for three days: three occurrences passed, the latest is today's.
 	occ, skipped, ok := due(sched, at(t, "2026-08-07 12:00"), at(t, "2026-08-10 10:00"))
 	if !ok {
