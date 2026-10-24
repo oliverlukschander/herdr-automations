@@ -87,6 +87,16 @@ type Record struct {
 	// RunnerPID is the process carrying the run out. A run that is still
 	// scheduled or running while this process is gone was interrupted.
 	RunnerPID int `json:"runner_pid,omitempty"`
+	// Agent and Model are what a prompt run asked for; Workflow is what a
+	// delegated one handed over to.
+	Agent    string `json:"agent,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Workflow string `json:"workflow,omitempty"`
+	// SessionID, SessionSource and CWD are the agent's session as Herdr
+	// reported it: how its transcript is found once the tab is gone.
+	SessionID     string `json:"session_id,omitempty"`
+	SessionSource string `json:"session_source,omitempty"`
+	CWD           string `json:"cwd,omitempty"`
 }
 
 // Orphaned reports whether a run's latest record says it is under way while

@@ -11,6 +11,7 @@ import (
 	"github.com/DnzzL/herdr-automations/internal/config"
 	"github.com/DnzzL/herdr-automations/internal/history"
 	"github.com/DnzzL/herdr-automations/internal/host"
+	"github.com/DnzzL/herdr-automations/internal/output"
 	"github.com/DnzzL/herdr-automations/internal/report"
 )
 
@@ -108,4 +109,41 @@ func TestReportsArePerRun(t *testing.T) {
 	if paths[0] == paths[1] || h.closed != 1 {
 		t.Fatalf("paths=%v closed=%d", paths, h.closed)
 	}
+}
+
+// A no-action run closes its tab, and the pane goes with it: the capture has
+// to be taken first, or the run leaves nothing to read but its summary.
+func TestThePaneIsKeptBeforeTheTabCloses(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	a := automation()
+	a.Workspace = config.WorkspaceExisting
+	a.CloseWhenNoAction = true
+	var order []string
+	h := &fakeHost{capture: "the agent's last answer", do: func(_ host.Session, a config.Automation, _ time.Duration) error {
+		return os.WriteFile(a.ReportPath, []byte(`{"user_action_required":false,"summary":"All clear"}`), 0600)
+	}}
+	h.closeTab = func(host.Session, config.Automation) error {
+		order = append(order, "close")
+		return nil
+	}
+	if err := New(&capturingHost{h, &order}).Run(a, history.TriggerCron); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(order, ",") != "capture,close" {
+		t.Errorf("order = %v", order)
+	}
+	if c, ok := output.Read(runs(t)[0].RunID); !ok || c.Text != "the agent's last answer" {
+		t.Errorf("capture = %+v %v", c, ok)
+	}
+}
+
+// capturingHost notes when Capture is asked, in the same list as CloseTab.
+type capturingHost struct {
+	*fakeHost
+	order *[]string
+}
+
+func (c *capturingHost) Capture(s host.Session) (string, error) {
+	*c.order = append(*c.order, "capture")
+	return c.fakeHost.Capture(s)
 }

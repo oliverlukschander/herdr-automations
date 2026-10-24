@@ -45,6 +45,8 @@ Usage:
   herdr-automations delete <name>    Remove an automation (--if-match SHA, --json)
   herdr-automations history [name] [--limit N] [--run ID] [--json]
                                      Show recent runs and action reports
+  herdr-automations output <run_id> [--json]
+                                     Where a run's output is: its agent's transcript, its last pane
   herdr-automations report --file PATH --action yes|no --summary TEXT
   herdr-automations cleanup          Remove run worktrees whose work already landed
   herdr-automations pane             Interactive board (used by the Herdr pane)
@@ -89,6 +91,8 @@ func main() {
 		err = deleteCmd(os.Args[2:])
 	case "history":
 		err = historyCmd(os.Args[2:])
+	case "output":
+		err = outputCmd(os.Args[2:])
 	case "pane":
 		err = pane.Run()
 	case "install-skill":
@@ -505,6 +509,38 @@ func deleteCmd(args []string) error {
 		return err
 	}
 	fmt.Printf("Deleted %s\n", name)
+	return nil
+}
+
+func outputCmd(args []string) error {
+	fs, asJSON := newFlags("output", args)
+	runID, err := oneName("output", args, fs)
+	if asJSON {
+		if err != nil {
+			emit(nil, usageError(err))
+		}
+		emit(api.Output(runID))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	res, err := api.Output(runID)
+	if err != nil {
+		return err
+	}
+	if t := res.Transcript; t != nil {
+		path := "not found on this machine"
+		if t.Path != nil {
+			path = *t.Path
+		}
+		fmt.Printf("Transcript (%s, session %s): %s\n", t.Agent, t.SessionID, path)
+	}
+	if res.Pane == nil {
+		fmt.Println("No pane output was kept for this run.")
+		return nil
+	}
+	fmt.Print(res.Pane.Text)
 	return nil
 }
 

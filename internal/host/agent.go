@@ -18,6 +18,7 @@ type agentWork struct {
 	ops   ops
 	knobs knobs
 	a     config.Automation
+	seen  func(Agent)
 }
 
 func (w agentWork) do(s Session, timeout time.Duration) error {
@@ -27,10 +28,27 @@ func (w agentWork) do(s Session, timeout time.Duration) error {
 	if err := w.submit(s); err != nil {
 		return err
 	}
-	if err := w.await(s, timeout); err != nil {
+	w.observe(s)
+	err := w.await(s, timeout)
+	w.observe(s) // a /clear inside the run starts a new session
+	if err != nil {
 		return fmt.Errorf("waiting for the agent: %w", err)
 	}
 	return nil
+}
+
+// observe tells seen which session the agent is in. Best effort: an agent
+// that is already gone has nothing left to say, and that is not the run's
+// failure.
+func (w agentWork) observe(s Session) {
+	if w.seen == nil {
+		return
+	}
+	info, err := w.ops.AgentInfo(s.PaneID)
+	if err != nil || info.SessionID == "" {
+		return
+	}
+	w.seen(Agent{SessionID: info.SessionID, SessionSource: info.SessionSource, CWD: info.CWD})
 }
 
 // args assembles what gets forwarded to the agent executable. Model and MCP

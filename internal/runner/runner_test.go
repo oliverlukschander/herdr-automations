@@ -16,6 +16,7 @@ import (
 	"github.com/DnzzL/herdr-automations/internal/history"
 	"github.com/DnzzL/herdr-automations/internal/host"
 	"github.com/DnzzL/herdr-automations/internal/notify"
+	"github.com/DnzzL/herdr-automations/internal/output"
 )
 
 // fakeSink is notify's test seam (internal/notify/notify_test.go), reused here
@@ -35,6 +36,9 @@ type fakeHost struct {
 	closed    int
 	provision func(config.Automation) (host.Session, error)
 	do        func(host.Session, config.Automation, time.Duration) error
+	// agents are told to Do's seen, in order, before do runs.
+	agents  []host.Agent
+	capture string
 
 	mu       sync.Mutex
 	timeouts []time.Duration
@@ -47,10 +51,13 @@ func (f *fakeHost) Provision(a config.Automation) (host.Session, error) {
 	return f.provision(a)
 }
 
-func (f *fakeHost) Do(s host.Session, a config.Automation, timeout time.Duration) error {
+func (f *fakeHost) Do(s host.Session, a config.Automation, timeout time.Duration, seen func(host.Agent)) error {
 	f.mu.Lock()
 	f.timeouts = append(f.timeouts, timeout)
 	f.mu.Unlock()
+	for _, ag := range f.agents {
+		seen(ag)
+	}
 	if f.do == nil {
 		return nil
 	}
@@ -309,10 +316,60 @@ func TestStatusForSeparatesACancellationFromAFailure(t *testing.T) {
 	}
 }
 
+func (f *fakeHost) Capture(host.Session) (string, error) { return f.capture, nil }
+
 func (f *fakeHost) CloseTab(s host.Session, a config.Automation) error {
 	f.closed++
 	if f.closeTab != nil {
 		return f.closeTab(s, a)
 	}
 	return nil
+}
+
+// Every record of a run says which agent and model it asked for, and from the
+// moment Herdr names the agent's session, which session: written at once,
+// so the app can follow the transcript while the run is still going.
+func TestARunRecordsItsAgentAndSession(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	a := automation()
+	a.Model = "sonnet"
+	h := &fakeHost{agents: []host.Agent{
+		{SessionID: "s1", SessionSource: "herdr:claude", CWD: "/repo"},
+		{SessionID: "s2", SessionSource: "herdr:claude", CWD: "/repo"},
+	}, capture: "last screen"}
+	if err := New(h).Run(a, history.TriggerManual); err != nil {
+		t.Fatal(err)
+	}
+	recs, _ := history.Timeline(runs(t)[0].RunID)
+	var trail []string
+	for _, r := range recs {
+		trail = append(trail, string(r.Status)+":"+r.SessionID)
+		if r.Agent != "claude" || r.Model != "sonnet" || r.Workflow != "" {
+			t.Errorf("%s record: agent=%q model=%q workflow=%q", r.Status, r.Agent, r.Model, r.Workflow)
+		}
+	}
+	if got := strings.Join(trail, " "); got != "scheduled: running: running:s1 done:s2" {
+		t.Errorf("trail = %s", got)
+	}
+	if c, ok := output.Read(recs[0].RunID); !ok || c.Text != "last screen" {
+		t.Errorf("capture = %+v, %v", c, ok)
+	}
+}
+
+// A workflow run names its workflow, not an agent, and its pane is kept: it
+// is the only output such a run has.
+func TestAWorkflowRunKeepsItsPane(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	a := automation()
+	a.Prompt, a.Workflow = "", "storno-2026"
+	if err := New(&fakeHost{capture: "HWF-1:0"}).Run(a, history.TriggerCron); err != nil {
+		t.Fatal(err)
+	}
+	last := runs(t)[0]
+	if last.Workflow != "storno-2026" || last.Agent != "" || last.SessionID != "" {
+		t.Errorf("record = %+v", last)
+	}
+	if !output.Exists(last.RunID) {
+		t.Error("no capture kept")
+	}
 }

@@ -3,6 +3,7 @@ package host
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,7 @@ type fakeOps struct {
 	paneRun         func(paneID string, command ...string) error
 	paneRead        func(paneID string, lines int) (string, error)
 	lookPath        func(file string) error
+	agentInfo       func(target string) (herdr.AgentInfo, error)
 
 	starts  int
 	submits int
@@ -94,6 +96,13 @@ func (f *fakeOps) AgentWait(target string, d time.Duration) error {
 		return nil
 	}
 	return f.agentWait(target, d)
+}
+
+func (f *fakeOps) AgentInfo(target string) (herdr.AgentInfo, error) {
+	if f.agentInfo == nil {
+		return herdr.AgentInfo{}, nil
+	}
+	return f.agentInfo(target)
 }
 
 func (f *fakeOps) PaneRun(paneID string, command ...string) error {
@@ -203,7 +212,7 @@ func TestDoPicksTheWorkflowAdapterWhenOneIsNamed(t *testing.T) {
 	}
 	h := &live{ops: ops, knobs: fast()}
 
-	err := h.Do(Session{PaneID: "p"}, config.Automation{Workflow: "bump"}, time.Minute)
+	err := h.Do(Session{PaneID: "p"}, config.Automation{Workflow: "bump"}, time.Minute, nil)
 	if err == nil || ops.starts != 0 {
 		t.Fatalf("want the hwf adapter chosen, got err=%v starts=%d", err, ops.starts)
 	}
@@ -215,7 +224,7 @@ func TestDoPicksTheAgentAdapterWhenThereIsAPrompt(t *testing.T) {
 
 	if err := h.Do(Session{PaneID: "p"}, config.Automation{
 		Agent: "claude", Prompt: "go", Name: "n",
-	}, time.Minute); err != nil {
+	}, time.Minute, nil); err != nil {
 		t.Fatal(err)
 	}
 	if ops.starts != 1 || ops.submits != 1 || ops.waits != 1 {
@@ -332,4 +341,46 @@ func (f *fakeOps) TabClose(tab string) error {
 
 func (f *fakeOps) PaneIsShell(paneID string) bool {
 	return f.paneIsShell != nil && f.paneIsShell(paneID)
+}
+
+// The run is told which session its agent is in once the prompt is being
+// worked on, and again when the agent settles: a /clear starts a new one.
+func TestDoReportsTheAgentSessionWhenWorkingAndWhenSettled(t *testing.T) {
+	sessions := []string{"s1", "s2"}
+	ops := &fakeOps{agentInfo: func(string) (herdr.AgentInfo, error) {
+		id := sessions[0]
+		sessions = sessions[1:]
+		return herdr.AgentInfo{Kind: "claude", SessionID: id, SessionSource: "herdr:claude", CWD: "/repo"}, nil
+	}}
+	h := &live{ops: ops, knobs: fast()}
+	var seen []Agent
+	err := h.Do(Session{PaneID: "p"}, config.Automation{Agent: "claude", Prompt: "go", Name: "n"}, time.Minute,
+		func(a Agent) { seen = append(seen, a) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Agent{{"s1", "herdr:claude", "/repo"}, {"s2", "herdr:claude", "/repo"}}
+	if !reflect.DeepEqual(seen, want) {
+		t.Errorf("seen = %+v", seen)
+	}
+}
+
+// An agent herdr cannot describe is not a failed run.
+func TestDoSaysNothingAboutAnAgentItCannotRead(t *testing.T) {
+	ops := &fakeOps{agentInfo: func(string) (herdr.AgentInfo, error) { return herdr.AgentInfo{}, errors.New("gone") }}
+	h := &live{ops: ops, knobs: fast()}
+	called := false
+	if err := h.Do(Session{PaneID: "p"}, config.Automation{Agent: "claude", Prompt: "go", Name: "n"}, time.Minute,
+		func(Agent) { called = true }); err != nil || called {
+		t.Fatalf("err=%v called=%v", err, called)
+	}
+}
+
+func TestCaptureReadsTheRunsPane(t *testing.T) {
+	var asked int
+	ops := &fakeOps{paneRead: func(pane string, lines int) (string, error) { asked = lines; return "screen of " + pane, nil }}
+	got, err := (&live{ops: ops, knobs: fast()}).Capture(Session{PaneID: "w1:p1"})
+	if err != nil || got != "screen of w1:p1" || asked != CaptureLines {
+		t.Fatalf("got %q, %v, %d lines", got, err, asked)
+	}
 }

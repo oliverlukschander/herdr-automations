@@ -7,6 +7,7 @@ import (
 
 	"github.com/DnzzL/herdr-automations/internal/config"
 	"github.com/DnzzL/herdr-automations/internal/history"
+	"github.com/DnzzL/herdr-automations/internal/output"
 	"github.com/DnzzL/herdr-automations/internal/schedule"
 )
 
@@ -117,6 +118,12 @@ func fieldsOf(r history.Record) runFields {
 		Error:              str(r.Error),
 		ReportPath:         str(r.ReportPath),
 		TabClosed:          r.TabClosed,
+		Agent:              str(r.Agent),
+		Model:              str(r.Model),
+		Workflow:           str(r.Workflow),
+		SessionID:          str(r.SessionID),
+		SessionSource:      str(r.SessionSource),
+		CWD:                str(r.CWD),
 	}
 }
 
@@ -128,7 +135,7 @@ func runOf(r history.Record) Run {
 	run := Run{
 		RunID: r.RunID, Automation: r.Automation, Status: string(r.Status),
 		Trigger: str(string(r.Trigger)), StartedAt: Time{started}, UpdatedAt: Time{r.At},
-		runFields: fieldsOf(r),
+		runFields: fieldsOf(r), HasOutput: output.Exists(r.RunID),
 	}
 	if history.Orphaned(r) {
 		required := true
