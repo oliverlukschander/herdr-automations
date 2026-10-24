@@ -224,6 +224,7 @@ func Latest() (map[string]Record, error) {
 	defer f.Close()
 
 	latest := map[string]Record{}
+	start := map[string]time.Time{}
 	newest := map[string]string{} // automation -> its most recently begun run
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -233,7 +234,17 @@ func Latest() (map[string]Record, error) {
 			continue // tolerate a torn write rather than losing the file
 		}
 		if _, seen := latest[r.RunID]; !seen {
-			newest[r.Automation] = r.RunID
+			// Begun when its ID says, as Runs orders them: a run-now request
+			// gets its ID before its first record lands, and a cron run can
+			// slip in between.
+			s, ok := StartedAt(r.RunID)
+			if !ok {
+				s = r.At
+			}
+			start[r.RunID] = s
+			if cur, ok := newest[r.Automation]; !ok || !s.Before(start[cur]) {
+				newest[r.Automation] = r.RunID
+			}
 		}
 		latest[r.RunID] = r
 	}

@@ -187,3 +187,21 @@ func TestOrphanedNeedsADeadRunnerAndAnUnfinishedRun(t *testing.T) {
 		}
 	}
 }
+
+// Review finding 12: list (Latest) and show (Runs) name the same last run
+// when runs land in the log in another order than they began, as a run-now
+// request's does: its ID is minted before its first record is written.
+func TestLatestAndRunsAgreeWhenTheLogIsOutOfOrder(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	base := time.Now().Add(-time.Hour)
+	later, earlier := idAt("a", base.Add(time.Minute)), idAt("a", base)
+	appendAll(t,
+		Record{RunID: later, Automation: "a", Status: StatusDone, At: base.Add(2 * time.Minute)},
+		Record{RunID: earlier, Automation: "a", Status: StatusMissed, At: base.Add(3 * time.Minute)},
+	)
+	runs, _ := Runs("a", 1)
+	latest, _ := Latest()
+	if runs[0].RunID != later || latest["a"].RunID != later {
+		t.Errorf("Runs says %s, Latest says %s; want %s", runs[0].RunID, latest["a"].RunID, later)
+	}
+}
