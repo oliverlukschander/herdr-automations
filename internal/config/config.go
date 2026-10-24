@@ -152,8 +152,14 @@ func (a *Automation) validate() error {
 	if a.Cron == "" {
 		return fmt.Errorf("%s: missing cron", a.Name)
 	}
-	if _, err := ParseCron(a.Cron); err != nil {
+	sched, err := ParseCron(a.Cron)
+	if err != nil {
 		return fmt.Errorf("%s: invalid cron %q: %w", a.Name, a.Cron, err)
+	}
+	// An automation that can never run is the silent absence this file is
+	// written against: say so where the broken entries are shown.
+	if sched.Next(time.Now()).IsZero() {
+		return fmt.Errorf("%s: cron %q never comes due (no date within five years matches it)", a.Name, a.Cron)
 	}
 	if a.Repo == "" {
 		return fmt.Errorf("%s: missing repo", a.Name)

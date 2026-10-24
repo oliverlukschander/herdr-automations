@@ -165,13 +165,32 @@ func due(sched cron.Schedule, last, now time.Time) (occ time.Time, skipped int, 
 }
 
 // NextRun is when this automation comes due next, for the board and the list.
-// The second return is false when the cron cannot be parsed.
+// The second return is false when the cron cannot be parsed or never comes
+// due.
 func NextRun(a config.Automation, from time.Time) (time.Time, bool) {
-	sched, err := config.ParseCron(a.Cron)
-	if err != nil {
+	runs, err := Upcoming(a.Cron, from, 1)
+	if err != nil || len(runs) == 0 {
 		return time.Time{}, false
 	}
-	return sched.Next(from), true
+	return runs[0], true
+}
+
+// Upcoming is the next n times expr comes due after from, or fewer: robfig
+// answers a zero time once it finds no date within five years ("0 0 30 2 *"
+// never comes), and a zero time is not a run.
+func Upcoming(expr string, from time.Time, n int) ([]time.Time, error) {
+	sched, err := config.ParseCron(expr)
+	if err != nil {
+		return nil, err
+	}
+	out := []time.Time{}
+	for t := from; len(out) < n; {
+		if t = sched.Next(t); t.IsZero() {
+			break
+		}
+		out = append(out, t)
+	}
+	return out, nil
 }
 
 // Collision is a moment when more than one automation comes due. Herdr is a

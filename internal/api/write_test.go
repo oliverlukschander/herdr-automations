@@ -283,3 +283,23 @@ func TestNewOnADuplicatedNameIsExists(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+// Review round 3, finding 2: next_runs never holds a null, and a cron that
+// never comes due is refused with the reason (it would not load).
+func TestNextRunsHoldOnlyRealTimes(t *testing.T) {
+	sandbox(t, kept)
+	_, err := Apply([]byte("name: feb30\ncron: \"0 0 30 2 *\"\nrepo: /x\nprompt: p\n"), ApplyOptions{DryRun: true}, time.Now())
+	var f *Failure
+	if !errors.As(err, &f) || f.Code != CodeInvalid || !strings.Contains(f.Message, "never comes due") {
+		t.Errorf("never-due cron: %v", err)
+	}
+	res, err := Apply([]byte("name: rare\ncron: \"0 0 29 2 1\"\nrepo: /x\nprompt: p\n"), ApplyOptions{DryRun: true}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range res.NextRuns {
+		if n.IsZero() {
+			t.Errorf("a null among next_runs %v", res.NextRuns)
+		}
+	}
+}

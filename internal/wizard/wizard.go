@@ -40,15 +40,17 @@ func Run() error {
 	var cronExpr string
 	for {
 		cronExpr = ask(in, "Cron (5 fields or @daily/@hourly)", "0 9 * * 1-5")
-		sched, err := config.ParseCron(cronExpr)
+		runs, err := schedule.Upcoming(cronExpr, time.Now(), 3)
 		if err != nil {
 			fmt.Printf("  invalid: %v\n", err)
 			continue
 		}
-		next := time.Now()
+		if len(runs) == 0 {
+			fmt.Println("  invalid: no date within five years matches it")
+			continue
+		}
 		fmt.Println("  next runs:")
-		for i := 0; i < 3; i++ {
-			next = sched.Next(next)
+		for _, next := range runs {
 			fmt.Printf("    %s\n", next.Format("Mon 02 Jan 15:04"))
 		}
 		// Herdr runs every due automation; the scheduler never holds one back.

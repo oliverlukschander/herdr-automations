@@ -224,11 +224,9 @@ func Apply(body []byte, o ApplyOptions, now time.Time) (*ApplyResult, error) {
 	if o.DryRun {
 		res.Config = configInfo(before)
 	}
-	if next, ok := schedule.NextRun(a, now); ok {
-		for range 5 {
-			res.NextRuns = append(res.NextRuns, Time{next})
-			next, _ = schedule.NextRun(a, next)
-		}
+	runs, _ := schedule.Upcoming(a.Cron, now, 5)
+	for _, t := range runs {
+		res.NextRuns = append(res.NextRuns, Time{t})
 	}
 	return res, nil
 }

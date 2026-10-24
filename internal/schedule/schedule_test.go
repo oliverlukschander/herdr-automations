@@ -291,3 +291,23 @@ func TestNextRunSaysSoWhenTheCronIsUnparseable(t *testing.T) {
 		t.Fatal("want ok=true for @daily")
 	}
 }
+
+// Review round 3, finding 2: a valid cron that never comes due made robfig
+// answer zero times, which went out as null next runs. There are none.
+func TestACronThatNeverComesDueHasNoNextRun(t *testing.T) {
+	from := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	runs, err := Upcoming("0 0 30 2 *", from, 5)
+	if err != nil || len(runs) != 0 || runs == nil {
+		t.Errorf("Upcoming = %v (nil %v), %v", runs, runs == nil, err)
+	}
+	if _, ok := NextRun(config.Automation{Cron: "0 0 30 2 *"}, from); ok {
+		t.Error("NextRun says it comes due")
+	}
+	// A cron that comes due once or twice in five years gives just those.
+	rare, _ := Upcoming("0 0 29 2 1", from, 5) // 29 February on a Monday
+	for _, r := range rare {
+		if r.IsZero() {
+			t.Errorf("a zero time among %v", rare)
+		}
+	}
+}

@@ -300,3 +300,13 @@ func TestACronThatCrashesTheParserIsADiagnostic(t *testing.T) {
 		}
 	}
 }
+
+// Review round 3, finding 2: an automation that can never run is listed with
+// the broken ones, not as an enabled entry with no next run.
+func TestACronThatNeverComesDueIsADiagnostic(t *testing.T) {
+	withConfig(t, "automations:\n  - name: feb30\n    cron: \"0 0 30 2 *\"\n    repo: /x\n    prompt: p\n")
+	cfg, err := Load()
+	if err != nil || len(cfg.Invalid) != 1 || !strings.Contains(cfg.Invalid[0].Message, "never comes due") {
+		t.Errorf("cfg = %+v, %v", cfg, err)
+	}
+}
