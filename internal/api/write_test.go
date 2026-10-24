@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -301,5 +302,59 @@ func TestNextRunsHoldOnlyRealTimes(t *testing.T) {
 		if n.IsZero() {
 			t.Errorf("a null among next_runs %v", res.NextRuns)
 		}
+	}
+}
+
+const nullKeys = `automations:
+  - name: a
+    cron: "@daily"
+    repo: /x
+    prompt: p
+    # leave empty: the agent's default
+    model:
+    timeout_minutes: ~
+    workflow: null
+`
+
+// App review L6: entry leaves out keys the file writes as null, so a JSON body
+// built from it lacks them. Absent and null are the same data: those lines,
+// comments and all, stay as written. Only a key that has a value goes when
+// the body leaves it out or sends null.
+func TestAKeyWrittenAsNullSurvivesAJSONSaveOfEntry(t *testing.T) {
+	sandbox(t, nullKeys)
+	shown, err := Show("a", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := shown.Automation.Entry
+	if entry.Model != nil || entry.TimeoutMinutes != nil || entry.Workflow != nil {
+		t.Fatalf("entry = %+v, want the null keys left out", entry)
+	}
+	cron := "@hourly"
+	entry.Cron = &cron
+	body, _ := json.Marshal(entry)
+	if _, err := Apply(body, ApplyOptions{}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if want := strings.Replace(nullKeys, `"@daily"`, `"@hourly"`, 1); fileNow(t) != want {
+		t.Errorf("file:\n%s\nwant only the cron changed:\n%s", fileNow(t), want)
+	}
+
+	// Sending null for a key that is null in the file is the same: untouched.
+	res, err := Apply([]byte(`{"name":"a","cron":"@hourly","repo":"/x","prompt":"p","model":null}`), ApplyOptions{}, time.Now())
+	if err != nil || res.Action != "unchanged" {
+		t.Errorf("explicit null on a null key: %v, %v; want unchanged", res, err)
+	}
+
+	// A key with a value still goes when the body sends null or leaves it out.
+	sandbox(t, strings.Replace(nullKeys, "    model:\n", "    model: opus\n", 1))
+	if _, err := Apply([]byte(`{"name":"a","cron":"@daily","repo":"/x","prompt":"p","model":null}`), ApplyOptions{}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := fileNow(t); strings.Contains(got, "model") || strings.Contains(got, "agent's default") {
+		t.Errorf("explicit null kept model:\n%s", got)
+	}
+	if !strings.Contains(fileNow(t), "timeout_minutes: ~\n    workflow: null\n") {
+		t.Errorf("the other null keys went:\n%s", fileNow(t))
 	}
 }

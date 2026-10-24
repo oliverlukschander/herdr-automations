@@ -164,6 +164,7 @@ func Apply(body []byte, o ApplyOptions, now time.Time) (*ApplyResult, error) {
 
 		var raw []byte
 		var err error
+		want := b.want()
 		switch {
 		case it == nil:
 			res.Action = "created"
@@ -173,7 +174,13 @@ func Apply(body []byte, o ApplyOptions, now time.Time) (*ApplyResult, error) {
 			}
 		case b.json:
 			res.Action = "replaced"
-			raw, err = f.SetKeys(*it, b.pairs(), missing(*it, b.node))
+			gone, kept := missing(*it, b.node)
+			raw, err = f.SetKeys(*it, b.pairs(), gone)
+			for _, k := range kept {
+				if want != nil {
+					want[k] = nil
+				}
+			}
 		default:
 			res.Action = "replaced"
 			raw, err = f.Replace(*it, b.yaml)
@@ -185,7 +192,7 @@ func Apply(body []byte, o ApplyOptions, now time.Time) (*ApplyResult, error) {
 			res.Action = "unchanged"
 		}
 		return config.Edit{Raw: raw, Touched: []string{name, target}, MustLoad: []string{name},
-			Entry: name, Want: b.want()}, err
+			Entry: name, Want: want}, err
 	}
 
 	// The checks run shells and ask Herdr, seconds each, so never while the
@@ -441,21 +448,27 @@ func (b body) text() (string, error) {
 	return config.NewEntryText(b.pairs())
 }
 
-// missing are the keys the entry has and a JSON body leaves out: a JSON body
-// is the whole entry, so those go.
-func missing(it config.Item, n *yaml.Node) []string {
+// missing are the keys the entry has and a JSON body leaves out or sends as
+// null: a JSON body is the whole entry, so those go. A key the file writes as
+// null is the same data as one left out, so it is kept as written, comments
+// and all: entry omits it, and saving entry back must not cost the line.
+func missing(it config.Item, n *yaml.Node) (gone, kept []string) {
 	var e map[string]any
 	if it.Decode(&e) != nil {
-		return nil
+		return nil, nil
 	}
-	var out []string
-	for k := range e {
-		if i := keyIndex(n, k); i < 0 || n.Content[i+1].Tag == "!!null" {
-			out = append(out, k)
+	for k, v := range e {
+		if i := keyIndex(n, k); i >= 0 && n.Content[i+1].Tag != "!!null" {
+			continue
+		}
+		if v == nil {
+			kept = append(kept, k)
+		} else {
+			gone = append(gone, k)
 		}
 	}
-	slices.Sort(out)
-	return out
+	slices.Sort(gone)
+	return gone, kept
 }
 
 func keyIndex(m *yaml.Node, key string) int {
