@@ -15,6 +15,7 @@ package host
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -138,12 +139,33 @@ func (h *live) Provision(a config.Automation) (Session, error) {
 	if err == nil && a.CloseWhenNoAction {
 		s.TabID, err = h.ops.RunTab(paneID, workspaceID, "")
 	}
+	if err != nil {
+		h.discard(s, a)
+	}
 	return s, err
 }
 
 // Do runs the automation's work in the session and reports whether it worked.
 func (h *live) Do(s Session, a config.Automation, timeout time.Duration, seen func(Agent)) error {
-	return h.workFor(a, seen).do(s, timeout)
+	err := h.workFor(a, seen).do(s, timeout)
+	if errors.Is(err, ErrNoAgent) {
+		h.discard(s, a)
+	}
+	return err
+}
+
+// discard closes the workspace a run opened for itself once no agent will
+// start in it. Nothing there is worth reading and the error is in history, so
+// keeping it open would only leave an empty workspace per failed run. An
+// existing-mode workspace is the user's and is never closed. A worktree's
+// checkout and branch stay behind for cleanup.
+func (h *live) discard(s Session, a config.Automation) {
+	if a.Workspace == config.WorkspaceExisting || s.WorkspaceID == "" {
+		return
+	}
+	if err := h.ops.WorkspaceClose(s.WorkspaceID); err != nil {
+		log.Printf("%s: closing workspace %s, where no agent started: %v", a.Name, s.WorkspaceID, err)
+	}
 }
 
 // Capture reads back the run's pane.

@@ -10,6 +10,11 @@ What changed for someone using the plugin. Dates are release dates.
   starts under the plain name instead of failing with `agent_name_taken`, and the
   earlier tab stays open for you. A tab left open before this version still
   blocks until you close it.
+- A `root` or `worktree` run whose agent never starts no longer leaves an empty
+  workspace behind: the plugin closes the workspace it just opened for that run.
+  The error stays in the history. In `worktree` mode the checkout and its
+  `auto/` branch stay on disk for `herdr-automations cleanup`. An `existing`
+  workspace is never closed.
 
 ## v0.8.0 — 2026-09-14
 

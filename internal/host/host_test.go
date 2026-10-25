@@ -21,6 +21,7 @@ type fakeOps struct {
 	tabCreate       func(workspaceID, cwd, label string) (string, error)
 	worktreeCreate  func(repo, branch, label string) (string, string, error)
 	workspaceCreate func(cwd, label string) (string, string, error)
+	workspaceClose  func(workspaceID string) error
 	agentStart      func(name, kind, paneID string, args []string) error
 	agentRename     func(target, name string) error
 	agentSubmit     func(target, text string) error
@@ -39,6 +40,8 @@ type fakeOps struct {
 	reads   int
 	// renames is every AgentRename, as "target name".
 	renames []string
+	// closes is every workspace WorkspaceClose was asked to close.
+	closes []string
 }
 
 func (f *fakeOps) WorktreeCreate(repo, branch, label string) (string, string, error) {
@@ -53,6 +56,14 @@ func (f *fakeOps) WorkspaceCreate(cwd, label string) (string, string, error) {
 		return "w2", "w2:p1", nil
 	}
 	return f.workspaceCreate(cwd, label)
+}
+
+func (f *fakeOps) WorkspaceClose(workspaceID string) error {
+	f.closes = append(f.closes, workspaceID)
+	if f.workspaceClose == nil {
+		return nil
+	}
+	return f.workspaceClose(workspaceID)
 }
 
 func (f *fakeOps) TabCreate(workspaceID, cwd, label string) (string, error) {
@@ -411,6 +422,88 @@ func TestReleaseNameLeavesExistingModeAndWorkflowsAlone(t *testing.T) {
 		if err := (&live{ops: ops, knobs: fast()}).ReleaseName(Session{PaneID: "w7:p3"}, a, runStart); err != nil || len(ops.renames) != 0 {
 			t.Errorf("%s: err = %v, renames = %q", a.Name, err, ops.renames)
 		}
+	}
+}
+
+// A run whose agent never started leaves an empty workspace nobody needs:
+// the one it opened for itself is closed, and only that one.
+func TestAFailedStartClosesTheWorkspaceTheRunOpened(t *testing.T) {
+	for _, mode := range []config.Workspace{config.WorkspaceRoot, config.WorkspaceWorktree} {
+		ops := &fakeOps{agentStart: func(string, string, string, []string) error {
+			return apiErr("agent start", herdr.CodeNameTaken)
+		}}
+		a := config.Automation{Name: "soc", Agent: "grok", Prompt: "go", Workspace: mode}
+		err := (&live{ops: ops, knobs: fast()}).Do(Session{WorkspaceID: "wMA", PaneID: "wMA:p1"}, a, time.Minute, nil)
+		if !errors.Is(err, ErrNoAgent) || !reflect.DeepEqual(ops.closes, []string{"wMA"}) {
+			t.Errorf("%s: err = %v, closed %q, want wMA once", mode, err, ops.closes)
+		}
+	}
+}
+
+// An existing-mode workspace is the user's, and a run that got as far as its
+// agent has a tab worth reading: neither is closed.
+func TestNothingElseClosesAWorkspace(t *testing.T) {
+	refused := func(string, string, string, []string) error { return apiErr("agent start", herdr.CodeNameTaken) }
+	for _, tc := range []struct {
+		name string
+		mode config.Workspace
+		ops  *fakeOps
+	}{
+		{"existing mode, failed start", config.WorkspaceExisting, &fakeOps{agentStart: refused}},
+		{"prompt failed after the start", config.WorkspaceRoot, &fakeOps{agentSubmit: func(string, string) error {
+			return apiErr("agent prompt", "server_unreachable")
+		}}},
+		{"agent died after the start", config.WorkspaceWorktree, &fakeOps{
+			agentWait:   func(string, time.Duration) error { return apiErr("agent wait", herdr.CodeAgentGone) },
+			agentStatus: func(string) (string, error) { return "idle", nil },
+		}},
+	} {
+		a := config.Automation{Name: "soc", Agent: "grok", Prompt: "go", Workspace: tc.mode, WorkspaceID: "w7"}
+		err := (&live{ops: tc.ops, knobs: fast()}).Do(Session{WorkspaceID: "w7", PaneID: "w7:p1"}, a, time.Minute, nil)
+		if err == nil || len(tc.ops.closes) != 0 {
+			t.Errorf("%s: err = %v, closed %q", tc.name, err, tc.ops.closes)
+		}
+	}
+}
+
+// Closing is best effort: the run is remembered for why its agent did not
+// start, not for what the cleanup after it ran into.
+func TestARefusedCloseKeepsTheStartError(t *testing.T) {
+	ops := &fakeOps{
+		agentStart:     func(string, string, string, []string) error { return apiErr("agent start", herdr.CodeNameTaken) },
+		workspaceClose: func(string) error { return apiErr("workspace close", "workspace_group_close_required") },
+	}
+	a := config.Automation{Name: "soc", Agent: "grok", Prompt: "go", Workspace: config.WorkspaceRoot}
+	err := (&live{ops: ops, knobs: fast()}).Do(Session{WorkspaceID: "wMA", PaneID: "wMA:p1"}, a, time.Minute, nil)
+	if want := "start grok agent: agent start: agent_name_taken: agent_name_taken"; err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}
+
+// A run's tab that cannot be verified is the same story one step earlier: no
+// agent will start in the workspace it just opened.
+func TestProvisionClosesTheWorkspaceItOpenedWhenTheRunTabFails(t *testing.T) {
+	noTab := func(string, string, string) (string, error) {
+		return "", errors.New("run pane moved or cannot be verified")
+	}
+	for _, tc := range []struct {
+		mode   config.Workspace
+		closes []string
+	}{
+		{config.WorkspaceRoot, []string{"w2"}},
+		{config.WorkspaceWorktree, []string{"w1"}},
+		{config.WorkspaceExisting, nil},
+	} {
+		ops := &fakeOps{runTab: noTab}
+		a := config.Automation{Name: "soc", Repo: "/repo", Workspace: tc.mode, WorkspaceID: "w7", CloseWhenNoAction: true}
+		if _, err := (&live{ops: ops, knobs: fast()}).Provision(a); err == nil || !reflect.DeepEqual(ops.closes, tc.closes) {
+			t.Errorf("%s: err = %v, closed %q, want %q", tc.mode, err, ops.closes, tc.closes)
+		}
+	}
+	// A workspace that was never opened is not closed either.
+	ops := &fakeOps{workspaceCreate: func(string, string) (string, string, error) { return "", "", errors.New("no herdr") }}
+	if _, err := (&live{ops: ops, knobs: fast()}).Provision(config.Automation{Name: "soc", Repo: "/repo", Workspace: config.WorkspaceRoot}); err == nil || len(ops.closes) != 0 {
+		t.Errorf("err = %v, closed %q", err, ops.closes)
 	}
 }
 

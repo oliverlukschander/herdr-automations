@@ -150,6 +150,12 @@ func (Client) WorkspaceCreate(cwd, label string) (workspaceID, paneID string, er
 	return res.ids("workspace create")
 }
 
+// WorkspaceClose closes one workspace. Never with --group, which closes the
+// primary workspace and every worktree workspace linked to it.
+func (Client) WorkspaceClose(id string) error {
+	return run(nil, "workspace", "close", id)
+}
+
 // TabCreate gives a run its own shell without creating a workspace.
 func (Client) TabCreate(workspaceID, cwd, label string) (string, error) {
 	var res createResult

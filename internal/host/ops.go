@@ -18,6 +18,7 @@ type ops interface {
 	WorktreeCreate(repo, branch, label string) (workspaceID, paneID string, err error)
 	WorkspaceCreate(cwd, label string) (workspaceID, paneID string, err error)
 	TabCreate(workspaceID, cwd, label string) (paneID string, err error)
+	WorkspaceClose(workspaceID string) error
 
 	AgentStart(name, kind, paneID string, extraArgs []string) error
 	AgentRename(target, name string) error

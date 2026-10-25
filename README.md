@@ -216,6 +216,7 @@ agent's own posture is Herdr's to describe.
 - **Writes to two places** — the plugin config dir (`herdr plugin config-dir dnzzl.automations`) and `~/.local/state/herdr/plugins/dnzzl.automations` for the run log. Nothing else on disk is touched by the plugin itself
 - **Creates git worktrees and branches** in the repos you name, `auto/<name>-<timestamp>`. It never removes one on its own — `herdr-automations cleanup` is the only thing that deletes, it asks first, and it only touches `auto/` branches already contained in your default branch
 - **Renames the agent of a run whose tab stays open** to `<name>-MMDD-HHMM`, the run's start, so the next run can start under the plain name. `existing` mode already gives every run its own name
+- **Closes a workspace it opened when the run's agent never started** — nothing in it to read, and the error is in the history. Never one it did not open for that run, and never an `existing` one; a worktree's checkout and branch stay for `cleanup`
 - **Opens no ports**, phones nothing home, and downloads nothing at runtime — the only network access is `herdr plugin install` fetching a checksum-verified release binary
 - **Raises a Herdr toast** on a failed run, a missed run, or a broken `automations.yaml` entry — in-session only: a panel inside the Herdr window, not an OS notification, and not sent anywhere
 - **`herdr plugin uninstall`** removes the plugin and leaves your config and history where they are
