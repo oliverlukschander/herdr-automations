@@ -15,6 +15,7 @@ package host
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -46,6 +47,10 @@ type Host interface {
 	// of.
 	Do(s Session, a config.Automation, timeout time.Duration, seen func(Agent)) error
 	CloseTab(s Session, a config.Automation) error
+	// ReleaseName is for a run whose tab stays open: its agent gives up the
+	// automation's name for one carrying the run's start, so the next run
+	// can take the name.
+	ReleaseName(s Session, a config.Automation, started time.Time) error
 	// Capture is the run's pane as text, its last CaptureLines lines.
 	Capture(s Session) (string, error)
 }
@@ -58,6 +63,16 @@ const CaptureLines = 500
 // Closing it is the gesture for calling a run off, so the run is reported
 // cancelled rather than failed.
 var ErrCancelled = errors.New("the run's workspace was closed")
+
+// ErrNoAgent is in the chain of a Do error from a run whose agent never
+// started: there is no agent holding a name for ReleaseName to give up.
+var ErrNoAgent = errors.New("the run's agent never started")
+
+// noAgent marks a start failure as ErrNoAgent without changing its message,
+// which history keeps and the app shows.
+type noAgent struct{ error }
+
+func (e noAgent) Unwrap() []error { return []error{e.error, ErrNoAgent} }
 
 // New returns the Host that drives the real Herdr.
 func New() Host { return &live{ops: herdrOps{}, knobs: defaultKnobs()} }
@@ -124,12 +139,33 @@ func (h *live) Provision(a config.Automation) (Session, error) {
 	if err == nil && a.CloseWhenNoAction {
 		s.TabID, err = h.ops.RunTab(paneID, workspaceID, "")
 	}
+	if err != nil {
+		h.discard(s, a)
+	}
 	return s, err
 }
 
 // Do runs the automation's work in the session and reports whether it worked.
 func (h *live) Do(s Session, a config.Automation, timeout time.Duration, seen func(Agent)) error {
-	return h.workFor(a, seen).do(s, timeout)
+	err := h.workFor(a, seen).do(s, timeout)
+	if errors.Is(err, ErrNoAgent) {
+		h.discard(s, a)
+	}
+	return err
+}
+
+// discard closes the workspace a run opened for itself once no agent will
+// start in it. Nothing there is worth reading and the error is in history, so
+// keeping it open would only leave an empty workspace per failed run. An
+// existing-mode workspace is the user's and is never closed. A worktree's
+// checkout and branch stay behind for cleanup.
+func (h *live) discard(s Session, a config.Automation) {
+	if a.Workspace == config.WorkspaceExisting || s.WorkspaceID == "" {
+		return
+	}
+	if err := h.ops.WorkspaceClose(s.WorkspaceID); err != nil {
+		log.Printf("%s: closing workspace %s, where no agent started: %v", a.Name, s.WorkspaceID, err)
+	}
 }
 
 // Capture reads back the run's pane.
@@ -176,12 +212,13 @@ func slug(name string) string {
 
 // agentNameFor is the name this run's agent gets. Normally the automation's,
 // which is what you want to read in Herdr's sidebar: one automation, one agent
-// name, and the previous run's is free because its workspace was closed.
+// name. The previous run's agent no longer holds it: either its tab was closed,
+// or the run gave the name up when it ended with its tab open (ReleaseName).
 //
-// In existing mode it is not free — earlier runs stay open in their own tabs on
-// purpose, so their names are still live and a repeat would be refused. The
-// pane ID goes in front to tell them apart, and in front rather than behind so
-// the 32-character trim can only eat the automation name.
+// In existing mode every run keeps its tab, several are open at once, and the
+// name is never given up. The pane ID goes in front to tell them apart, and in
+// front rather than behind so the 32-character trim can only eat the
+// automation name.
 func agentNameFor(a config.Automation, paneID string) string {
 	if a.Workspace != config.WorkspaceExisting {
 		return agentName(a.Name)
@@ -206,12 +243,44 @@ func caseMarked(s string) string {
 
 // agentName fits an automation name into Herdr's agent-name rules: lowercase,
 // [a-z0-9-_], at most 32 characters.
-func agentName(name string) string {
+func agentName(name string) string { return agentNameWithin(name, 32) }
+
+// agentNameWithin is agentName in at most limit characters, leaving room for
+// whatever goes after it.
+func agentNameWithin(name string, limit int) string {
 	s := slug(name)
-	if len(s) > 32 {
-		s = strings.Trim(s[:32], "-")
+	if len(s) > limit {
+		s = strings.Trim(s[:limit], "-")
 	}
 	return s
+}
+
+// keptSuffix is a kept run's start, local time, as month-day-hour-minute: the
+// minute history shows for the run.
+const keptSuffix = "-0102-1504"
+
+// keptAgentName is what a run's agent is called once the run is over and its
+// tab stays open. Only the automation name is trimmed, never the start.
+func keptAgentName(name string, started time.Time) string {
+	return agentNameWithin(name, 32-len(keptSuffix)) + started.Format(keptSuffix)
+}
+
+// ReleaseName renames the run's agent so it stops holding the automation's
+// name. A taken name (two kept runs in one minute) falls back to no name at
+// all, which still frees the plain one.
+func (h *live) ReleaseName(s Session, a config.Automation, started time.Time) error {
+	if a.Workflow != "" || a.Workspace == config.WorkspaceExisting {
+		return nil
+	}
+	err := h.ops.AgentRename(s.PaneID, keptAgentName(a.Name, started))
+	if h.ops.HasCode(err, herdr.CodeNameTaken) {
+		err = h.ops.AgentRename(s.PaneID, "")
+	}
+	if h.ops.HasCode(err, herdr.CodeAgentGone) || h.ops.HasCode(err, "agent_not_found") {
+		// The agent exited, and Herdr dropped its name with it.
+		return nil
+	}
+	return err
 }
 
 // CloseTab refuses to close a working/blocked agent or a moved/shared tab.

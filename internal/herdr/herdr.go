@@ -150,6 +150,12 @@ func (Client) WorkspaceCreate(cwd, label string) (workspaceID, paneID string, er
 	return res.ids("workspace create")
 }
 
+// WorkspaceClose closes one workspace. Never with --group, which closes the
+// primary workspace and every worktree workspace linked to it.
+func (Client) WorkspaceClose(id string) error {
+	return run(nil, "workspace", "close", id)
+}
+
 // TabCreate gives a run its own shell without creating a workspace.
 func (Client) TabCreate(workspaceID, cwd, label string) (string, error) {
 	var res createResult
@@ -196,6 +202,15 @@ func (Client) AgentStart(name, kind, paneID string, extraArgs []string) error {
 	return run(nil, args...)
 }
 
+// AgentRename renames the agent in target. An empty name clears it, which
+// leaves the agent nameless rather than holding anything a later start wants.
+func (Client) AgentRename(target, name string) error {
+	if name == "" {
+		return run(nil, "agent", "rename", target, "--clear")
+	}
+	return run(nil, "agent", "rename", target, name)
+}
+
 // CodePaneBusy is herdr's refusal to start an agent in a pane that is not
 // sitting at a shell prompt. It means the workspace exists but its shell has
 // not spawned yet, so it is a wait-and-retry rather than a dead run: a
@@ -212,6 +227,10 @@ const CodeAgentGone = "agent_not_running"
 // anything — the expected result of asking about a run somebody has reviewed
 // and closed.
 const CodeWorkspaceGone = "workspace_not_found"
+
+// CodeNameTaken is herdr's refusal to give an agent a name that a live agent
+// already has.
+const CodeNameTaken = "agent_name_taken"
 
 // CodeStalled is herdr's verdict when a submitted prompt produces no visible
 // state change within 5 seconds. It does not mean the prompt was lost — an

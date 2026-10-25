@@ -24,8 +24,9 @@ func (quietHost) Provision(config.Automation) (host.Session, error) {
 func (quietHost) Do(host.Session, config.Automation, time.Duration, func(host.Agent)) error {
 	return nil
 }
-func (quietHost) CloseTab(host.Session, config.Automation) error { return nil }
-func (quietHost) Capture(host.Session) (string, error)           { return "", nil }
+func (quietHost) CloseTab(host.Session, config.Automation) error               { return nil }
+func (quietHost) ReleaseName(host.Session, config.Automation, time.Time) error { return nil }
+func (quietHost) Capture(host.Session) (string, error)                         { return "", nil }
 
 func sandboxWith(t *testing.T, yaml string) {
 	t.Helper()
