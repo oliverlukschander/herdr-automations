@@ -2,6 +2,15 @@
 
 What changed for someone using the plugin. Dates are release dates.
 
+## Unreleased
+
+- A `root` or `worktree` run whose tab stays open — it needs action, it failed, or
+  its tab could not be safely closed — now renames its agent to the automation's
+  name plus the run's start, e.g. `soc-grow-x-account-1025-1705`. The next run
+  starts under the plain name instead of failing with `agent_name_taken`, and the
+  earlier tab stays open for you. A tab left open before this version still
+  blocks until you close it.
+
 ## v0.8.0 — 2026-09-14
 
 - `workspace: existing` with `workspace_id` opens each run in a fresh tab inside

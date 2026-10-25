@@ -110,6 +110,33 @@ func TestTabCreate(t *testing.T) {
 	}
 }
 
+// An empty name is a clear, not a rename to "".
+func TestAgentRename(t *testing.T) {
+	for name, want := range map[string][]string{
+		"soc-1025-1705": {"agent", "rename", "w2:p1", "soc-1025-1705"},
+		"":              {"agent", "rename", "w2:p1", "--clear"},
+	} {
+		dir := t.TempDir()
+		bin := filepath.Join(dir, "herdr")
+		argsFile := filepath.Join(dir, "args")
+		if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HERDR_TEST_ARGS\"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("HERDR_BIN_PATH", bin)
+		t.Setenv("HERDR_TEST_ARGS", argsFile)
+		if err := (Client{}).AgentRename("w2:p1", name); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(argsFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n"); !reflect.DeepEqual(got, want) {
+			t.Errorf("AgentRename(%q): args=%q, want %q", name, got, want)
+		}
+	}
+}
+
 func TestPaneRunPreservesShellArguments(t *testing.T) {
 	dir := t.TempDir()
 	fake := filepath.Join(dir, "herdr")

@@ -198,6 +198,27 @@ func TestSubmitPassesThroughAnErrorThatIsNotAStall(t *testing.T) {
 	}
 }
 
+// A run whose agent never started has no name to give up, and says so
+// without its error reading any differently.
+func TestDoMarksAFailedStartAsNoAgent(t *testing.T) {
+	ops := &fakeOps{agentStart: func(string, string, string, []string) error {
+		return apiErr("agent start", herdr.CodeNameTaken)
+	}}
+	err := (&live{ops: ops, knobs: fast()}).Do(Session{PaneID: "p"}, config.Automation{Agent: "grok", Prompt: "go"}, time.Minute, nil)
+	if !errors.Is(err, ErrNoAgent) || !herdr.HasCode(err, herdr.CodeNameTaken) {
+		t.Fatalf("got %v, want ErrNoAgent with herdr's code kept", err)
+	}
+	if want := "start grok agent: agent start: agent_name_taken: agent_name_taken"; err.Error() != want {
+		t.Errorf("message = %q, want %q", err, want)
+	}
+
+	ops = &fakeOps{agentSubmit: func(string, string) error { return apiErr("agent prompt", "server_unreachable") }}
+	err = (&live{ops: ops, knobs: fast()}).Do(Session{PaneID: "p"}, config.Automation{Agent: "grok", Prompt: "go"}, time.Minute, nil)
+	if err == nil || errors.Is(err, ErrNoAgent) {
+		t.Fatalf("a prompt failure comes after the start: %v", err)
+	}
+}
+
 // ── waiting for it to finish ────────────────────────────────────────
 
 func TestAwaitReturnsWhenTheAgentSettles(t *testing.T) {

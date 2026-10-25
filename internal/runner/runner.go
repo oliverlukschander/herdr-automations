@@ -175,6 +175,12 @@ Do not close your tab yourself. Do not ask a question merely to keep it open. Th
 		}
 	})
 	r.capture(t)
+	if !errors.Is(err, host.ErrNoAgent) && !errors.Is(err, host.ErrCancelled) {
+		// Deferred to cover every outcome below, and still before the caller
+		// gives back the in-flight slot: the next run of this automation must
+		// never find its agent name held by this one.
+		defer r.releaseName(t, a)
+	}
 	if err != nil {
 		if rep, readErr := report.Read(a.ReportPath); a.CloseWhenNoAction && readErr == nil {
 			err = fmt.Errorf("%w; %s", err, rep.Summary)
@@ -196,11 +202,12 @@ Do not close your tab yourself. Do not ask a question merely to keep it open. Th
 // attempt is one run as the history sees it: every record written about it
 // carries everything known about it so far.
 type attempt struct {
-	id      string
-	a       config.Automation
-	trigger history.Trigger
-	session host.Session
-	agent   host.Agent
+	id        string
+	a         config.Automation
+	trigger   history.Trigger
+	session   host.Session
+	agent     host.Agent
+	tabClosed bool
 }
 
 // base is the record every status of the run starts from.
@@ -229,6 +236,22 @@ func (r *Runner) capture(t *attempt) {
 	}
 	if err := output.Save(t.id, text); err != nil {
 		log.Printf("%s: keeping the pane's output: %v", t.a.Name, err)
+	}
+}
+
+// releaseName frees the automation's agent name from a run whose tab stays
+// open. Best effort: the run's outcome is already on record, and a name left
+// held costs the next run, not this one.
+func (r *Runner) releaseName(t *attempt, a config.Automation) {
+	if t.tabClosed {
+		return
+	}
+	started, ok := history.StartedAt(t.id)
+	if !ok {
+		started = time.Now()
+	}
+	if err := r.host.ReleaseName(t.session, a, started); err != nil {
+		log.Printf("%s: releasing the agent name: %v", a.Name, err)
 	}
 }
 
@@ -283,7 +306,7 @@ func (r *Runner) complete(t *attempt, a config.Automation) error {
 	if err := r.host.CloseTab(t.session, a); err != nil {
 		return fmt.Errorf("no work remains but the tab could not be safely closed: %w", err)
 	}
-	rec.TabClosed = true
+	rec.TabClosed, t.tabClosed = true, true
 	rec.At = time.Now()
 	if err := history.Append(rec); err != nil {
 		log.Printf("tab closed; could not record closure: %v", err)

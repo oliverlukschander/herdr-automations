@@ -32,8 +32,11 @@ func (f *fakeSink) NotificationShow(title, body string, sound herdr.Sound) error
 
 // fakeHost stands in for the machine. A nil field means the step works.
 type fakeHost struct {
-	closeTab  func(host.Session, config.Automation) error
-	closed    int
+	closeTab func(host.Session, config.Automation) error
+	closed   int
+	// release answers ReleaseName; released is each start it was given.
+	release   func(host.Session, config.Automation) error
+	released  []time.Time
 	provision func(config.Automation) (host.Session, error)
 	do        func(host.Session, config.Automation, time.Duration) error
 	// agents are told to Do's seen, in order, before do runs.
@@ -317,6 +320,14 @@ func TestStatusForSeparatesACancellationFromAFailure(t *testing.T) {
 }
 
 func (f *fakeHost) Capture(host.Session) (string, error) { return f.capture, nil }
+
+func (f *fakeHost) ReleaseName(s host.Session, a config.Automation, started time.Time) error {
+	f.released = append(f.released, started)
+	if f.release != nil {
+		return f.release(s, a)
+	}
+	return nil
+}
 
 func (f *fakeHost) CloseTab(s host.Session, a config.Automation) error {
 	f.closed++

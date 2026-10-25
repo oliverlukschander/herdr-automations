@@ -23,7 +23,7 @@ type agentWork struct {
 
 func (w agentWork) do(s Session, timeout time.Duration) error {
 	if err := w.start(s); err != nil {
-		return fmt.Errorf("start %s agent: %w", w.a.Agent, err)
+		return noAgent{fmt.Errorf("start %s agent: %w", w.a.Agent, err)}
 	}
 	if err := w.submit(s); err != nil {
 		return err

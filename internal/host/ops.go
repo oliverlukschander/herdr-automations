@@ -20,6 +20,7 @@ type ops interface {
 	TabCreate(workspaceID, cwd, label string) (paneID string, err error)
 
 	AgentStart(name, kind, paneID string, extraArgs []string) error
+	AgentRename(target, name string) error
 	AgentSubmit(target, text string) error
 	AgentSubmitPending(paneID string) error
 	AgentStatus(target string) (string, error)
