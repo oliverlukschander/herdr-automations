@@ -318,6 +318,7 @@ export default class Automations extends View {
     return col;
   }
 
+  // A run that needs nobody is one line; its summary stays in the automation's history.
   inboxRow(r, t) {
     const color = r.action ? t.blocked : r.status === "done" ? t.ansi2 : r.status === "failed" ? t.ansi1 : t.dim;
     return v_flex().id(`inbox-${r.run_id}`).mx(8).px(8).py(6).gap(2).rounded(7).cursor_pointer().hover((s) => s.bg(t.hover))
@@ -327,8 +328,8 @@ export default class Automations extends View {
         .child(div().flex_1().min_w(0).truncate().child(r.automation))
         .child(div().text_size(11).text_color(color).child(verdict(r)))
         .child(div().text_size(11).text_color(t.dim).child(ago(r.at))))
-      .child(div().pl(13).text_size(11).text_color(t.muted).when(!r.summary, (el) => el.truncate())
-        .child(r.summary || r.error || `${duration(r.seconds)}${r.terminal && this.live(r.terminal) ? " · open" : ""}`));
+      .when(r.action !== false, (el) => el.child(div().pl(13).text_size(11).text_color(t.muted).when(!r.summary, (el) => el.truncate())
+        .child(r.summary || r.error || `${duration(r.seconds)}${r.terminal && this.live(r.terminal) ? " · open" : ""}`)));
   }
 
   row(a, t) {
