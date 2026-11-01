@@ -7,6 +7,7 @@ import (
 
 	"github.com/DnzzL/herdr-automations/internal/config"
 	"github.com/DnzzL/herdr-automations/internal/herdr"
+	"github.com/DnzzL/herdr-automations/internal/report"
 )
 
 // agentWork starts an interactive agent, hands it the prompt, and waits for it
@@ -141,9 +142,23 @@ func (w agentWork) await(s Session, timeout time.Duration) error {
 
 		err := w.ops.AgentWait(s.PaneID, slice)
 		if err == nil {
-			return nil
+			if !w.a.CloseWhenNoAction {
+				return nil
+			}
+			// Agents can appear idle briefly between tools. The explicit report
+			// is the completion signal; keep watching until it arrives.
+			if _, reportErr := report.Read(w.a.ReportPath); reportErr == nil {
+				return nil
+			}
+			status, statusErr := w.ops.AgentStatus(s.PaneID)
+			if statusErr == nil && status == "blocked" {
+				return fmt.Errorf("agent needs input; completion report not yet available")
+			}
+			last = fmt.Errorf("completion report missing or invalid after %s", timeout)
+			time.Sleep(w.knobs.statusPoll)
+			continue
 		}
-		if w.ops.HasCode(err, herdr.CodeAgentGone) {
+		if w.ops.HasCode(err, herdr.CodeAgentGone) || w.ops.HasCode(err, "agent_not_found") {
 			return w.agentGoneOutcome(s)
 		}
 		// The slice expired with the agent still working, which is the normal
@@ -160,6 +175,11 @@ func (w agentWork) await(s Session, timeout time.Duration) error {
 // "cancelled" hides it behind the one status the plugin deliberately never
 // notifies about.
 func (w agentWork) agentGoneOutcome(s Session) error {
+	if w.a.CloseWhenNoAction {
+		if _, err := report.Read(w.a.ReportPath); err == nil && w.ops.PaneIsShell(s.PaneID) {
+			return nil
+		}
+	}
 	_, err := w.ops.AgentStatus(s.PaneID)
 	switch {
 	case err == nil:
@@ -168,7 +188,7 @@ func (w agentWork) agentGoneOutcome(s Session) error {
 		return fmt.Errorf("the agent exited before finishing")
 	case w.ops.HasCode(err, herdr.CodeWorkspaceGone):
 		return ErrCancelled
-	case w.ops.HasCode(err, herdr.CodeAgentGone):
+	case (w.ops.HasCode(err, herdr.CodeAgentGone) || w.ops.HasCode(err, "agent_not_found")):
 		// AgentStatus is itself agent-scoped, so a dead agent in a live
 		// workspace is exactly as likely to answer with its own
 		// agent_not_running as with a status string. Either shape means the

@@ -42,6 +42,10 @@ func (n *Notifier) Outcome(name string, st history.Status, detail string) {
 	if n == nil {
 		return
 	}
+	if st == history.StatusNeedsAction {
+		n.show(name+" — action needed", oneLine(detail), herdr.SoundRequest)
+		return
+	}
 	if st != history.StatusFailed {
 		return
 	}

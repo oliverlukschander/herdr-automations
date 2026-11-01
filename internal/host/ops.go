@@ -12,6 +12,9 @@ import (
 // that starting an agent can answer "the pane is not a shell yet", only that
 // the work either happened or didn't. The tests script it.
 type ops interface {
+	RunTab(paneID, workspaceID, expectedTab string) (string, error)
+	TabClose(tabID string) error
+	PaneIsShell(paneID string) bool
 	WorktreeCreate(repo, branch, label string) (workspaceID, paneID string, err error)
 	WorkspaceCreate(cwd, label string) (workspaceID, paneID string, err error)
 	TabCreate(workspaceID, cwd, label string) (paneID string, err error)

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/DnzzL/herdr-automations/internal/daemon"
 	"github.com/DnzzL/herdr-automations/internal/history"
 	"github.com/DnzzL/herdr-automations/internal/pane"
+	"github.com/DnzzL/herdr-automations/internal/report"
 	"github.com/DnzzL/herdr-automations/internal/runner"
 	"github.com/DnzzL/herdr-automations/internal/schedule"
 	"github.com/DnzzL/herdr-automations/internal/skill"
@@ -31,7 +33,8 @@ Usage:
   herdr-automations run <name>       Trigger an automation now
   herdr-automations pause <name>     Stop scheduling an automation
   herdr-automations resume <name>    Resume a paused automation
-  herdr-automations history [name]   Show recent runs
+  herdr-automations history [name]   Show recent runs and action reports
+  herdr-automations report --file PATH --action yes|no --summary TEXT
   herdr-automations cleanup          Remove run worktrees whose work already landed
   herdr-automations pane             Interactive board (used by the Herdr pane)
   herdr-automations install-skill    Teach your coding agent to write automations
@@ -56,6 +59,8 @@ func main() {
 		err = list()
 	case "cleanup":
 		err = cleanupCmd(os.Args[2:])
+	case "report":
+		err = reportCmd(os.Args[2:])
 	case "run":
 		err = runCmd(os.Args[2:])
 	case "pause":
@@ -304,11 +309,44 @@ func showHistory(name string) error {
 	fmt.Printf("%-20s %-24s %-9s %-7s %s\n", "AT", "AUTOMATION", "STATUS", "TRIGGER", "DETAIL")
 	for _, r := range runs {
 		detail := r.Error
+		if r.UserActionRequired != nil {
+			action := "NO"
+			if *r.UserActionRequired {
+				action = "YES"
+			}
+			detail = "Action: " + action + " — " + r.Summary
+			if r.TabClosed {
+				detail += " (tab closed)"
+			}
+		}
 		if detail == "" {
 			detail = r.WorkspaceID
 		}
 		fmt.Printf("%-20s %-24s %-9s %-7s %s\n",
 			r.At.Format(time.DateTime), r.Automation, r.Status, r.Trigger, detail)
 	}
+	return nil
+}
+
+func reportCmd(args []string) error {
+	flags := flag.NewFlagSet("report", flag.ContinueOnError)
+	path := flags.String("file", "", "completion report path supplied by the scheduler")
+	action := flags.String("action", "", "yes or no")
+	summary := flags.String("summary", "", "summary and any next action")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *path == "" || (*action != "yes" && *action != "no") || flags.NArg() != 0 {
+		return fmt.Errorf("use report --file PATH --action yes|no --summary TEXT")
+	}
+	required := *action == "yes"
+	if err := report.Write(*path, report.Report{UserActionRequired: &required, Summary: *summary}); err != nil {
+		return err
+	}
+	label := "NEIN"
+	if required {
+		label = "JA"
+	}
+	fmt.Printf("Aktion für Oliver: %s — %s\n", label, *summary)
 	return nil
 }

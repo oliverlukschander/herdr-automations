@@ -14,6 +14,9 @@ import (
 // fakeOps scripts Herdr's answers. A nil field means "this call is fine and
 // says nothing", which keeps each test to the calls it actually cares about.
 type fakeOps struct {
+	runTab          func(string, string, string) (string, error)
+	tabClose        func(string) error
+	paneIsShell     func(string) bool
 	tabCreate       func(workspaceID, cwd, label string) (string, error)
 	worktreeCreate  func(repo, branch, label string) (string, string, error)
 	workspaceCreate func(cwd, label string) (string, string, error)
@@ -312,4 +315,21 @@ func TestAgentNameIsTheAutomationsOutsideExistingMode(t *testing.T) {
 			t.Errorf("agentNameFor(%s) = %q, want %q", mode, got, "inbox")
 		}
 	}
+}
+
+func (f *fakeOps) RunTab(pane, workspace, expected string) (string, error) {
+	if f.runTab != nil {
+		return f.runTab(pane, workspace, expected)
+	}
+	return "w1:t1", nil
+}
+func (f *fakeOps) TabClose(tab string) error {
+	if f.tabClose != nil {
+		return f.tabClose(tab)
+	}
+	return nil
+}
+
+func (f *fakeOps) PaneIsShell(paneID string) bool {
+	return f.paneIsShell != nil && f.paneIsShell(paneID)
 }

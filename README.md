@@ -291,3 +291,33 @@ PRs welcome — especially agent kinds tested in the wild, cleanup policies, and
 ## License
 
 [MIT](LICENSE)
+
+### Optional action reports and automatic tab closure
+
+Set `close_when_no_action: true` on an automation using `workspace: existing`.
+The scheduler gives each run a unique completion-report path and appends agent
+instructions to report whether the user must act. Agents write it with:
+
+```sh
+herdr-automations report --file /path/from/prompt --action no --summary 'No action needed; saved report: /path/to/details'
+```
+
+Use `--action yes` when review, a decision, login, or unresolved work remains.
+Workflows receive `HERDR_AUTOMATION_REPORT` and must atomically write JSON with
+`user_action_required` (boolean) and `summary` (nonempty string).
+
+History preserves the verdict and summary before any tab closes. A successful
+run with an explicit no-action report closes only its original, single-pane tab;
+an agent must also be idle or done. Action-needed, missing/invalid report,
+failed, blocked, moved, and shared-tab runs stay open. The board and `history`
+show the verdict. Automations without this setting retain their previous behavior.
+
+Local build `0.8.0-action-reports` adds this behavior and fixes shell argument
+quoting for workflow execution. A plugin update can replace the local binary;
+keep the matching source changes in the development checkout when updating.
+
+The completion monitor waits for the report even if the agent briefly appears
+idle between tools. An agent that has exited can still complete the run when
+its report exists and its pane has returned to the original shell. Tab closure
+is recorded only after Herdr confirms the tab no longer exists. Local build:
+`0.8.0-action-reports-tab-fix`.

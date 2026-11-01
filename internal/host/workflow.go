@@ -16,9 +16,10 @@ import (
 // and a `workflow:` automation reported done whatever happened — including
 // when hwf was not installed at all.
 type hwfWork struct {
-	ops   ops
-	knobs knobs
-	name  string
+	ops        ops
+	knobs      knobs
+	name       string
+	reportPath string
 }
 
 func (w hwfWork) do(s Session, timeout time.Duration) error {
@@ -30,7 +31,11 @@ func (w hwfWork) do(s Session, timeout time.Duration) error {
 	// The shell echoes the command it was given, so the marker appears twice on
 	// screen: once as this literal (with %d unexpanded) and once with the real
 	// status. Only the latter matches a digit, which is what exitCode looks for.
-	command := fmt.Sprintf("hwf run %s; printf '\\n%s:%%d\\n' $?", shellQuote(w.name), marker)
+	prefix := ""
+	if w.reportPath != "" {
+		prefix = "HERDR_AUTOMATION_REPORT=" + shellQuote(w.reportPath) + " "
+	}
+	command := prefix + fmt.Sprintf("hwf run %s; printf '\\n%s:%%d\\n' $?", shellQuote(w.name), marker)
 	if err := w.ops.PaneRun(s.PaneID, "sh", "-c", command); err != nil {
 		return fmt.Errorf("running workflow %s: %w", w.name, err)
 	}

@@ -64,7 +64,7 @@ func (r row) style() lipgloss.Style {
 		return dimStyle
 	}
 	switch r.last.Status {
-	case history.StatusFailed:
+	case history.StatusFailed, history.StatusNeedsAction:
 		return failStyle
 	case history.StatusDone:
 		return okStyle
@@ -87,7 +87,15 @@ func (r row) detail() string {
 	if !ok {
 		return ""
 	}
-	return "next " + next.Format("Mon 15:04")
+	detail := "next " + next.Format("Mon 15:04")
+	if r.last != nil && r.last.UserActionRequired != nil {
+		action := "no action"
+		if *r.last.UserActionRequired {
+			action = "ACTION NEEDED"
+		}
+		detail += " · " + action + ": " + truncate(r.last.Summary, 100)
+	}
+	return detail
 }
 
 // schedule is the cron column. Meaningless when the cron is the broken bit.

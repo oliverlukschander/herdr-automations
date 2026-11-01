@@ -109,3 +109,50 @@ func TestTabCreate(t *testing.T) {
 		})
 	}
 }
+
+func TestPaneRunPreservesShellArguments(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "herdr")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nshift 3\nexec sh -c \"$*\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HERDR_BIN_PATH", fake)
+	output := filepath.Join(dir, "output")
+	t.Setenv("HERDR_TEST_OUT", output)
+	if err := (Client{}).PaneRun("w1:p1", "sh", "-c", `printf '%s' "two words and an apostrophe: '" > "$HERDR_TEST_OUT"`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "two words and an apostrophe: '" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestAPIErrorDecodesStderrEnvelope(t *testing.T) {
+	err := newAPIError([]string{"agent", "get"}, nil, `{"error":{"code":"agent_not_running","message":"gone"}}`, errors.New("exit 1"))
+	if !HasCode(err, CodeAgentGone) {
+		t.Fatalf("lost code: %v", err)
+	}
+}
+
+func TestTabCloseVerifiesRemoval(t *testing.T) {
+	for _, disappears := range []bool{true, false} {
+		dir := t.TempDir()
+		fake := filepath.Join(dir, "herdr")
+		get := `echo '{"result":{"type":"tab_info"}}'`
+		if disappears {
+			get = `echo '{"error":{"code":"tab_not_found","message":"gone"}}' >&2; exit 1`
+		}
+		script := "#!/bin/sh\nif [ \"$2\" = close ]; then echo '{\"result\":{\"type\":\"ok\"}}'; else " + get + "; fi\n"
+		if err := os.WriteFile(fake, []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("HERDR_BIN_PATH", fake)
+		if err := (Client{}).TabClose("tab"); (err == nil) != disappears {
+			t.Fatalf("disappears=%t error=%v", disappears, err)
+		}
+	}
+}
