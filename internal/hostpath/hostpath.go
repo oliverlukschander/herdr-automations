@@ -120,6 +120,9 @@ func installedBinary(raw []byte) string {
 			Plugins []struct {
 				ID   string `json:"plugin_id"`
 				Root string `json:"plugin_root"`
+				// Enabled is false for a plugin turned off in Herdr: its
+				// binary is not the one installed, even if it is still there.
+				Enabled *bool `json:"enabled"`
 			} `json:"plugins"`
 		} `json:"result"`
 	}
@@ -127,7 +130,7 @@ func installedBinary(raw []byte) string {
 		return ""
 	}
 	for _, p := range list.Result.Plugins {
-		if p.ID == PluginID && p.Root != "" {
+		if p.ID == PluginID && p.Root != "" && (p.Enabled == nil || *p.Enabled) {
 			return filepath.Join(p.Root, "bin", "herdr-automations")
 		}
 	}

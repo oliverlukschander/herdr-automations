@@ -4,6 +4,9 @@ What changed for someone using the plugin. Dates are release dates.
 
 ## Unreleased
 
+- The login service no longer leaves every 30 seconds when the TUI plugin is
+  still installed but disabled: a disabled plugin's binary is not the
+  installed one.
 - `command:` (hc only) runs a shell command in the run's terminal, with no
   agent: done on exit 0, failed otherwise. With `close_when_no_action` it gets
   its report path as `$HERDR_AUTOMATION_REPORT`. The panel shows and edits
