@@ -50,9 +50,10 @@ function duration(sec) {
 }
 
 export default class Automations extends View {
-  init(p, cx) {
+  init(_props, cx) {
     this.handle = cx.focus_handle();
-    this.show(p?.machine ?? null, cx);
+    // props(), not init's argument: an overlay gets its props only there.
+    this.show(props()?.machine ?? null, cx);
     // Next-run times and the scheduler's pid; another machine's files can't be watched.
     cx.timer.every(30000, (cx) => this.refresh(cx));
   }
