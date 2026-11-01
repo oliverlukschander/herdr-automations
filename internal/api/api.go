@@ -41,9 +41,11 @@ type Automation struct {
 	TimeoutMinutes int              `json:"timeout_minutes"`
 	CatchUpMinutes int              `json:"catch_up_minutes"`
 	Disabled       bool             `json:"disabled"`
-	Line           int              `json:"line"`
-	Next           time.Time        `json:"next"`
-	Last           *Run             `json:"last"`
+	// Here so that saving the form keeps it.
+	CloseWhenNoAction bool      `json:"close_when_no_action,omitempty"`
+	Line              int       `json:"line"`
+	Next              time.Time `json:"next"`
+	Last              *Run      `json:"last"`
 }
 
 // Invalid is an entry that did not load, and where to fix it.
@@ -65,7 +67,10 @@ type Run struct {
 	Space      string         `json:"space,omitempty"`
 	Terminal   string         `json:"terminal,omitempty"`
 	Error      string         `json:"error,omitempty"`
-	Seen       bool           `json:"seen"`
+	// Action and Summary are the run's report: null when it wrote none.
+	Action  *bool  `json:"action"`
+	Summary string `json:"summary,omitempty"`
+	Seen    bool   `json:"seen"`
 }
 
 // List reads the config and the latest run of each automation.
@@ -85,7 +90,7 @@ func List() (Listing, error) {
 			Name: a.Name, Cron: a.Cron, Repo: a.Repo, Workspace: a.Workspace, WorkspaceID: a.WorkspaceID,
 			Agent: a.Agent, Model: a.Model, Template: a.Template, Prompt: a.Prompt, Workflow: a.Workflow,
 			MCPConfig: a.MCPConfig, AgentArgs: a.AgentArgs, TimeoutMinutes: a.TimeoutMinutes,
-			CatchUpMinutes: a.CatchUpMinutes, Disabled: a.Disabled, Line: a.Line,
+			CatchUpMinutes: a.CatchUpMinutes, Disabled: a.Disabled, CloseWhenNoAction: a.CloseWhenNoAction, Line: a.Line,
 		}
 		if a.Template != "" {
 			entry.Agent = "" // the default filled in at load; a template brings its own
@@ -122,6 +127,6 @@ func toRun(r history.Record) Run {
 	return Run{
 		RunID: r.RunID, Automation: r.Automation, Status: r.Status, Trigger: string(r.Trigger),
 		Started: r.Started, At: r.At, Seconds: int(r.At.Sub(r.Started).Seconds()),
-		Space: r.WorkspaceID, Terminal: r.PaneID, Error: r.Error, Seen: r.Seen,
+		Space: r.WorkspaceID, Terminal: r.PaneID, Error: r.Error, Action: r.Action, Summary: r.Summary, Seen: r.Seen,
 	}
 }

@@ -185,6 +185,13 @@ automations:
     # …
 ```
 
+**Runs that close themselves.** With `close_when_no_action: true` a run is asked to
+report whether somebody needs to act: the prompt names a command to run,
+`herdr-automations report --file <path> --action yes|no --summary "…"`. A run that
+reports `no` ends its terminal and stays out of the inbox; one that reports `yes`, or
+reports nothing, stays open there with its summary. `history` and `list` show the
+verdict.
+
 A run in `worktree` mode checks out where the app's own **New worktree…** would
 (`~/.herdr/worktrees/<repo>/<branch>`), so the app nests it under the repo's space when
 one is open. Closing a run's space calls the run off, as in the TUI.
@@ -252,6 +259,7 @@ automations:
     timeout_minutes: 60           # optional bound on the run
     catch_up_minutes: 120         # how late a sleep-delayed run may still start; -1 never
     disabled: true                # optional: keep it, don't schedule it
+    close_when_no_action: true    # hc only: the run reports; one nobody needs to act on closes
 ```
 
 

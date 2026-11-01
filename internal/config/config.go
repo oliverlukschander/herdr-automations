@@ -88,6 +88,14 @@ type Automation struct {
 	Session string `yaml:"session,omitempty"`
 	// Disabled keeps the entry in the file but out of the scheduler.
 	Disabled bool `yaml:"disabled,omitempty"`
+	// CloseWhenNoAction asks each run to report whether somebody needs to
+	// act (`herdr-automations report`), and ends a run's terminal when its
+	// report says nobody does. A run with action, or without a report, stays
+	// open for the panel's inbox. hc backend only.
+	CloseWhenNoAction bool `yaml:"close_when_no_action,omitempty"`
+	// ReportPath is where this run's report goes. Set by the runner for each
+	// run, never read from or written to the file.
+	ReportPath string `yaml:"-"`
 
 	// Line is where this entry starts in automations.yaml, 1-based, so an
 	// editor can be opened right at it. Set by Load, never written back.
@@ -187,6 +195,9 @@ func (a *Automation) validate(backend Backend) error {
 	}
 	if a.Template != "" && backend != BackendHC {
 		return fmt.Errorf("%s: template requires backend: hc", a.Name)
+	}
+	if a.CloseWhenNoAction && backend != BackendHC {
+		return fmt.Errorf("%s: close_when_no_action requires backend: hc", a.Name)
 	}
 	if a.Template == "" && backend == BackendHC && !KindTakesPromptArg(a.Agent) {
 		return fmt.Errorf("%s: agent %q cannot take its prompt under backend: hc yet (claude, codex and pi can)", a.Name, a.Agent)

@@ -70,6 +70,11 @@ type Record struct {
 	WorkspaceID string `json:"workspace_id,omitempty"`
 	PaneID      string `json:"pane_id,omitempty"`
 	Error       string `json:"error,omitempty"`
+	// Action and Summary are the run's report (close_when_no_action): does
+	// somebody need to act, and what it found. Nil Action: no report. The
+	// keys are the ones the action-reports fork wrote, so its runs keep theirs.
+	Action  *bool  `json:"user_action_required,omitempty"`
+	Summary string `json:"summary,omitempty"`
 	// Seen marks a finished run as opened, for the panel's inbox. On disk it
 	// is a copy of the run's latest record with the flag set; Runs folds it
 	// into the run rather than letting it stand in for the status.

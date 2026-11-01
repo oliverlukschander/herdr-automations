@@ -105,6 +105,13 @@ func (Client) Get(address string) (Terminal, error) {
 	return t, err
 }
 
+// Kill ends a terminal's program, and returns once it has. A terminal that
+// already finished is left as it is.
+func (Client) Kill(address string) error { return run(nil, "kill", address) }
+
+// Rm removes a finished terminal.
+func (Client) Rm(address string) error { return run(nil, "rm", address) }
+
 // Available reports whether herdr-core answers on this machine.
 func Available() bool {
 	return exec.Command(hostpath.HCBin(), "server", "status").Run() == nil

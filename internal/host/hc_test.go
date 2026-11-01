@@ -21,6 +21,7 @@ type fakeHC struct {
 	term     hc.Terminal
 	runErr   error
 	delay    time.Duration // per Wait
+	ended    []string      // kill and rm calls, in order
 }
 
 func (f *fakeHC) Run(cwd string, labels map[string]string, argv []string) (string, error) {
@@ -39,6 +40,10 @@ func (f *fakeHC) Wait(string, time.Duration) (hc.Wait, error) {
 }
 
 func (f *fakeHC) Get(string) (hc.Terminal, error) { return f.term, nil }
+
+func (f *fakeHC) Kill(a string) error { f.ended = append(f.ended, "kill "+a); return nil }
+
+func (f *fakeHC) Rm(a string) error { f.ended = append(f.ended, "rm "+a); return nil }
 
 func (f *fakeHC) MainCheckout(string) (string, error) { return "/src/myapp", nil }
 
@@ -180,5 +185,17 @@ func TestHCDo(t *testing.T) {
 				t.Fatalf("want %q, got %v", c.want, err)
 			}
 		})
+	}
+}
+
+// A run nobody needs goes away the way closing it in the app would: its
+// program ended first, since hc removes only a finished terminal.
+func TestHCCloseKillsThenRemovesTheTerminal(t *testing.T) {
+	f := &fakeHC{}
+	if err := newHCTest(f).Close(Session{PaneID: "t7"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(f.ended, ", "); got != "kill t7, rm t7" {
+		t.Fatalf("got %q", got)
 	}
 }

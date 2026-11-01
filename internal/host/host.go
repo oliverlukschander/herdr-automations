@@ -37,6 +37,13 @@ type Host interface {
 	Do(s Session, a config.Automation, timeout time.Duration) error
 }
 
+// Closer is a Host that can end a run's terminal once nobody needs it: the
+// hc host, for close_when_no_action. The herdr host is not one, and the
+// config refuses the setting there.
+type Closer interface {
+	Close(s Session) error
+}
+
 // ErrCancelled means the run's workspace was closed while it was working.
 // Closing it is the gesture for calling a run off, so the run is reported
 // cancelled rather than failed.

@@ -2,6 +2,14 @@
 
 What changed for someone using the plugin. Dates are release dates.
 
+## Unreleased
+
+- `close_when_no_action: true` (hc only): each run reports whether somebody
+  needs to act, with `herdr-automations report --action yes|no --summary …`.
+  One that says no ends its terminal and stays out of the panel's inbox; one
+  that says yes, or reports nothing, stays open there. `history`, `list` and
+  their `--json` carry the verdict and summary.
+
 ## v0.11.3 — 2026-10-30
 
 - The login service now actually follows `herdr plugin update`. An update

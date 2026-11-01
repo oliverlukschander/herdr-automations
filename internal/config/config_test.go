@@ -472,3 +472,23 @@ func TestSessionIsRefusedUnderHC(t *testing.T) {
 		t.Fatalf("got %+v", cfg.Invalid)
 	}
 }
+
+// Closing a run means ending its terminal, which only the hc host can do.
+func TestCloseWhenNoActionNeedsTheHCBackend(t *testing.T) {
+	for backend, want := range map[string]string{"hc": "", "herdr": "requires backend: hc", "auto": "requires backend: hc"} {
+		withConfig(t, "backend: "+backend+"\nautomations:\n  - {name: c, cron: \"@daily\", repo: /x, prompt: p, close_when_no_action: true}\n")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want == "" {
+			if len(cfg.Automations) != 1 || !cfg.Automations[0].CloseWhenNoAction {
+				t.Fatalf("%s: expected it to load, got %+v", backend, cfg.Invalid)
+			}
+			continue
+		}
+		if len(cfg.Invalid) != 1 || !strings.Contains(cfg.Invalid[0].Message, want) {
+			t.Fatalf("%s: want %q, got %+v", backend, want, cfg.Invalid)
+		}
+	}
+}

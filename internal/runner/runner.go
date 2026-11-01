@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/DnzzL/herdr-automations/internal/history"
 	"github.com/DnzzL/herdr-automations/internal/host"
 	"github.com/DnzzL/herdr-automations/internal/notify"
+	"github.com/DnzzL/herdr-automations/internal/report"
 )
 
 // Runner runs automations on a host. It holds the in-flight set, which used to
@@ -67,6 +69,17 @@ func (r *Runner) Run(a config.Automation, trigger history.Trigger) error {
 	id := history.NewID(a.Name, "")
 	r.record(id, a.Name, trigger, history.StatusScheduled, host.Session{}, "")
 
+	if a.CloseWhenNoAction {
+		var err error
+		if a.ReportPath, err = report.NewPath(); err != nil {
+			r.record(id, a.Name, trigger, history.StatusFailed, host.Session{}, err.Error())
+			return err
+		}
+		defer os.Remove(a.ReportPath)
+		if a.Prompt != "" {
+			a.Prompt += report.Ask(a.ReportPath)
+		}
+	}
 	session, err := r.host.Provision(a)
 	if err != nil {
 		r.record(id, a.Name, trigger, history.StatusFailed,
@@ -80,7 +93,45 @@ func (r *Runner) Run(a config.Automation, trigger history.Trigger) error {
 		r.record(id, a.Name, trigger, statusFor(err), session, err.Error())
 		return err
 	}
+	if a.CloseWhenNoAction {
+		return r.complete(id, a, trigger, session)
+	}
 	r.record(id, a.Name, trigger, history.StatusDone, session, "")
+	return nil
+}
+
+// complete records a finished run's report and, when it says nobody needs to
+// act, ends the run's terminal and marks the run seen, so it stays out of the
+// inbox. The verdict is on record before anything closes. A run without a
+// readable report failed at what it was asked, and stays open to be looked at.
+func (r *Runner) complete(id string, a config.Automation, trigger history.Trigger, s host.Session) error {
+	rep, err := report.Read(a.ReportPath)
+	if err != nil {
+		err = fmt.Errorf("the run wrote no report (%v); look at its terminal", err)
+		r.record(id, a.Name, trigger, history.StatusFailed, s, err.Error())
+		return err
+	}
+	rec := history.Record{
+		RunID: id, Automation: a.Name, Trigger: trigger, Status: history.StatusDone, At: time.Now(),
+		WorkspaceID: s.WorkspaceID, PaneID: s.PaneID, Action: rep.Action, Summary: rep.Summary,
+	}
+	if err := r.write(rec); err != nil {
+		return fmt.Errorf("could not record the report, so the run stays open: %w", err)
+	}
+	if *rep.Action {
+		return nil
+	}
+	c, ok := r.host.(host.Closer)
+	if !ok {
+		return nil
+	}
+	if err := c.Close(s); err != nil {
+		log.Printf("%s: no action needed, but its terminal stays open: %v", a.Name, err)
+		return nil
+	}
+	if err := history.MarkSeen(id); err != nil {
+		log.Printf("%s: marking the closed run seen: %v", a.Name, err)
+	}
 	return nil
 }
 
@@ -93,16 +144,22 @@ func statusFor(err error) history.Status {
 	return history.StatusFailed
 }
 
-// record is the only writer of run history, which is what makes it the only
-// caller of notify: the two cannot drift apart, and a future status inherits
-// its notification for free without runner filtering anything.
+// record writes one state of a run.
 func (r *Runner) record(id, name string, trigger history.Trigger, st history.Status, s host.Session, errMsg string) {
-	err := history.Append(history.Record{
+	_ = r.write(history.Record{
 		RunID: id, Automation: name, Trigger: trigger, Status: st, At: time.Now(),
 		Session: s.HerdrSession, WorkspaceID: s.WorkspaceID, PaneID: s.PaneID, Error: errMsg,
 	})
+}
+
+// write is the only writer of run history, which is what makes it the only
+// caller of notify: the two cannot drift apart, and a future status inherits
+// its notification for free without runner filtering anything.
+func (r *Runner) write(rec history.Record) error {
+	err := history.Append(rec)
 	if err != nil {
 		log.Printf("history append failed: %v", err)
 	}
-	r.notifier.Outcome(name, st, errMsg)
+	r.notifier.Outcome(rec.Automation, rec.Status, rec.Error)
+	return err
 }
