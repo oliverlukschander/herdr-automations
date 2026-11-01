@@ -4,6 +4,9 @@ What changed for someone using the plugin. Dates are release dates.
 
 ## Unreleased
 
+- `agent: grok` runs under `backend: hc`. Measured: grok reports working
+  through its tool calls and done when it ends, so a finished run is told
+  from a stuck one.
 - `close_when_no_action: true` (hc only): each run reports whether somebody
   needs to act, with `herdr-automations report --action yes|no --summary …`.
   One that says no ends its terminal and stays out of the panel's inbox; one

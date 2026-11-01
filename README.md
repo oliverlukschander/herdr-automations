@@ -219,7 +219,7 @@ the link.
 
 Under `backend: hc`, a run needs an agent that takes its prompt as an argument and
 reports its state to herdr-core, or a finished run can't be told from a stuck one:
-`claude` and `pi` (measured), `codex` (assumed, untested). The form offers the ones
+`claude`, `grok` and `pi` (measured), `codex` (assumed, untested). The form offers the ones
 installed. Other kinds are refused when the file loads; the TUI, which reads agents'
 screens itself, runs them all. `workflow:` and `session:`
 belong to the TUI and are refused too. A daemon started by a TUI session still exits

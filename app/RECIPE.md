@@ -57,7 +57,7 @@ top to bottom:
     NAME; SCHEDULE as pills (Hourly, Every morning, Weekdays 9:00, Mondays 9:00,
     Fridays 17:00, Custom) over a cron input; REPO with `Choose…` (typed on another
     machine); RUNS IN as pills (New worktree, Repo root, Existing space, the last
-    opening a pill per space on the panel's machine); AGENT as pills (claude, codex, pi, then each hc template); MODEL (hidden
+    opening a pill per space on the panel's machine); AGENT as pills (claude, codex, grok, pi, then each hc template); MODEL (hidden
     for a template); PROMPT (textarea, 4–12 rows); TIMEOUT (MINUTES); MCP CONFIG.
     Below: "Next: in 3h, Mon 09:00, Tue 09:00" in `muted`, or the problem in `ansi1`.
     `Cancel`, `Save` (solid) at the right.
@@ -123,7 +123,7 @@ top to bottom:
 - **Symlinked mod folders are not reloaded** on change; copy the files.
 - **`toLocaleDateString` options are ignored** by the runtime: spell weekdays out.
 - `InputState` / `TextareaState` only in `init` or handlers, never in `render`.
-- Under `backend: hc` only `claude`, `codex` and `pi` take a prompt; the form offers
+- Under `backend: hc` only `claude`, `codex`, `grok` and `pi` take a prompt; the form offers
   those and the hc templates.
 
 ## Done when

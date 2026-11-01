@@ -492,3 +492,17 @@ func TestCloseWhenNoActionNeedsTheHCBackend(t *testing.T) {
 		}
 	}
 }
+
+// The kinds measured to report their state to hc, grok last (2026-11-01).
+func TestHCLoadsTheAgentsThatReportTheirState(t *testing.T) {
+	for _, kind := range []string{"claude", "codex", "grok", "pi"} {
+		withConfig(t, "backend: hc\nautomations:\n  - {name: a, cron: \"@daily\", repo: /x, prompt: p, agent: "+kind+", model: m}\n")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(cfg.Automations) != 1 {
+			t.Fatalf("%s: %+v", kind, cfg.Invalid)
+		}
+	}
+}

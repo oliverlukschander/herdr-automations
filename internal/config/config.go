@@ -200,7 +200,7 @@ func (a *Automation) validate(backend Backend) error {
 		return fmt.Errorf("%s: close_when_no_action requires backend: hc", a.Name)
 	}
 	if a.Template == "" && backend == BackendHC && !KindTakesPromptArg(a.Agent) {
-		return fmt.Errorf("%s: agent %q cannot take its prompt under backend: hc yet (claude, codex and pi can)", a.Name, a.Agent)
+		return fmt.Errorf("%s: agent %q cannot take its prompt under backend: hc yet (claude, codex, grok and pi can)", a.Name, a.Agent)
 	}
 	if a.Workflow != "" && backend == BackendHC {
 		return fmt.Errorf("%s: workflow drives the Herdr TUI; it cannot run under backend: hc", a.Name)
@@ -242,11 +242,14 @@ func KindAcceptsModel(kind string) bool { return modelFlagKinds[kind] }
 // first message as a trailing argument, and they report their state to hc
 // (OSC 7501), without which a run can't be told done from stuck. Measured on
 // 2026-10-30: claude and pi report; opencode reports nothing; codex is
-// assumed from its CLI, not measured. Herdr's TUI watches agents' screens
+// assumed from its CLI, not measured. grok, on 2026-11-01: reports working
+// through every tool call and done once it ends, counting its turn then, as
+// pi does. Herdr's TUI watches agents' screens
 // itself, which is why it supports more of them.
 var promptArgKinds = map[string]bool{
 	"claude": true,
 	"codex":  true,
+	"grok":   true,
 	"pi":     true,
 }
 
