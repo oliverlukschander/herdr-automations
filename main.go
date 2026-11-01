@@ -180,12 +180,15 @@ func list() error {
 		}
 		// An unset model is not blank space — it is a decision left to the
 		// agent, and worth seeing next to the ones you made yourself.
-		model := a.Model
+		agent, model := a.Agent, a.Model
 		if model == "" {
 			model = "agent default"
 		}
+		if a.Command != "" {
+			agent, model = "command", "-"
+		}
 		fmt.Printf("%-24s %-16s %-9s %-8s %-13s %s\n",
-			name, a.Cron, a.Workspace, a.Agent, model, last)
+			name, a.Cron, a.Workspace, agent, model, last)
 	}
 	printDiagnostics(cfg)
 	printStoppedSessions(cfg)
@@ -388,7 +391,7 @@ func putCmd(args []string) error {
 	a := config.Automation{
 		Name: in.Name, Cron: in.Cron, Repo: in.Repo, Workspace: in.Workspace, WorkspaceID: in.WorkspaceID,
 		Agent: in.Agent, Model: in.Model, Template: in.Template, Prompt: in.Prompt, Workflow: in.Workflow,
-		MCPConfig: in.MCPConfig, AgentArgs: in.AgentArgs, TimeoutMinutes: in.TimeoutMinutes,
+		Command: in.Command, MCPConfig: in.MCPConfig, AgentArgs: in.AgentArgs, TimeoutMinutes: in.TimeoutMinutes,
 		CatchUpMinutes: in.CatchUpMinutes, Disabled: in.Disabled, CloseWhenNoAction: in.CloseWhenNoAction,
 	}
 	return printJSON(config.Put(original, a, dryRun))

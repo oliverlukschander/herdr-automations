@@ -73,6 +73,10 @@ type Automation struct {
 	Prompt string `yaml:"prompt,omitempty"`
 	// Workflow delegates execution to herdr-workflows: `hwf run <name>`.
 	Workflow string `yaml:"workflow,omitempty"`
+	// Command is a shell command the run's terminal runs, with no agent: done
+	// on exit 0, failed otherwise. With close_when_no_action it writes the
+	// report itself, at $HERDR_AUTOMATION_REPORT. hc backend only.
+	Command string `yaml:"command,omitempty"`
 	// MCPConfig is a path to an MCP servers JSON passed to the agent
 	// (claude: --mcp-config). Sugar over AgentArgs.
 	MCPConfig string `yaml:"mcp_config,omitempty"`
@@ -141,7 +145,7 @@ func (a *Automation) applyDefaults() {
 	if a.Workspace == "" {
 		a.Workspace = WorkspaceWorktree
 	}
-	if a.Agent == "" {
+	if a.Agent == "" && a.Command == "" {
 		a.Agent = "claude"
 	}
 	if a.TimeoutMinutes <= 0 {
@@ -173,8 +177,14 @@ func (a *Automation) validate(backend Backend) error {
 	if a.Repo == "" {
 		return fmt.Errorf("%s: missing repo", a.Name)
 	}
-	if (a.Prompt == "") == (a.Workflow == "") {
-		return fmt.Errorf("%s: exactly one of prompt or workflow is required", a.Name)
+	n := 0
+	for _, work := range []string{a.Prompt, a.Workflow, a.Command} {
+		if work != "" {
+			n++
+		}
+	}
+	if n != 1 {
+		return fmt.Errorf("%s: exactly one of prompt, workflow or command is required", a.Name)
 	}
 	if a.Workspace != WorkspaceWorktree && a.Workspace != WorkspaceRoot && a.Workspace != WorkspaceExisting {
 		return fmt.Errorf("%s: workspace must be worktree, root or existing, got %q", a.Name, a.Workspace)
@@ -199,7 +209,10 @@ func (a *Automation) validate(backend Backend) error {
 	if a.CloseWhenNoAction && backend != BackendHC {
 		return fmt.Errorf("%s: close_when_no_action requires backend: hc", a.Name)
 	}
-	if a.Template == "" && backend == BackendHC && !KindTakesPromptArg(a.Agent) {
+	if a.Command != "" && backend != BackendHC {
+		return fmt.Errorf("%s: command requires backend: hc", a.Name)
+	}
+	if a.Template == "" && a.Command == "" && backend == BackendHC && !KindTakesPromptArg(a.Agent) {
 		return fmt.Errorf("%s: agent %q cannot take its prompt under backend: hc yet (claude, codex, grok and pi can)", a.Name, a.Agent)
 	}
 	if a.Workflow != "" && backend == BackendHC {
@@ -319,6 +332,13 @@ func parse(raw []byte) (*Config, error) {
 			cfg.Invalid = append(cfg.Invalid, Diagnostic{
 				Name: a.Name, Line: a.Line,
 				Message: fmt.Sprintf("%s: template replaces agent and model; drop them", a.Name),
+			})
+			continue
+		}
+		if a.Command != "" && (a.Agent != "" || a.Model != "" || a.Template != "") {
+			cfg.Invalid = append(cfg.Invalid, Diagnostic{
+				Name: a.Name, Line: a.Line,
+				Message: fmt.Sprintf("%s: command runs no agent; drop agent, model and template", a.Name),
 			})
 			continue
 		}

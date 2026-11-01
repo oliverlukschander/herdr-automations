@@ -400,3 +400,24 @@ func TestWithoutCloseWhenNoActionNothingIsAsked(t *testing.T) {
 		t.Fatalf("got %+v, closed %v", got, h.closed)
 	}
 }
+
+// A command has no prompt to be told about its report; it finds the path in
+// its environment (the hc host puts it there), and closes the same way.
+func TestCloseWhenNoActionForACommand(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	h := &fakeHost{do: func(_ host.Session, a config.Automation, _ time.Duration) error {
+		if a.Prompt != "" || a.ReportPath == "" {
+			t.Errorf("prompt %q, report %q", a.Prompt, a.ReportPath)
+		}
+		no := false
+		return report.Write(a.ReportPath, report.Report{Action: &no, Summary: "nothing to export"})
+	}}
+	a := automation()
+	a.Agent, a.Prompt, a.Command, a.CloseWhenNoAction = "", "", "python3 export.py", true
+	if err := New(h).Run(a, "cron"); err != nil {
+		t.Fatal(err)
+	}
+	if got := runs(t)[0]; got.Status != history.StatusDone || len(h.closed) != 1 {
+		t.Fatalf("got %+v, closed %v", got, h.closed)
+	}
+}

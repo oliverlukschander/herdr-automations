@@ -36,6 +36,7 @@ type Automation struct {
 	Template       string           `json:"template,omitempty"`
 	Prompt         string           `json:"prompt,omitempty"`
 	Workflow       string           `json:"workflow,omitempty"`
+	Command        string           `json:"command,omitempty"`
 	MCPConfig      string           `json:"mcp_config,omitempty"`
 	AgentArgs      []string         `json:"agent_args,omitempty"`
 	TimeoutMinutes int              `json:"timeout_minutes"`
@@ -89,7 +90,7 @@ func List() (Listing, error) {
 		entry := Automation{
 			Name: a.Name, Cron: a.Cron, Repo: a.Repo, Workspace: a.Workspace, WorkspaceID: a.WorkspaceID,
 			Agent: a.Agent, Model: a.Model, Template: a.Template, Prompt: a.Prompt, Workflow: a.Workflow,
-			MCPConfig: a.MCPConfig, AgentArgs: a.AgentArgs, TimeoutMinutes: a.TimeoutMinutes,
+			Command: a.Command, MCPConfig: a.MCPConfig, AgentArgs: a.AgentArgs, TimeoutMinutes: a.TimeoutMinutes,
 			CatchUpMinutes: a.CatchUpMinutes, Disabled: a.Disabled, CloseWhenNoAction: a.CloseWhenNoAction, Line: a.Line,
 		}
 		if a.Template != "" {

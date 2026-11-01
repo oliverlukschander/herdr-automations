@@ -170,6 +170,8 @@ export default class Automations extends View {
       name: field(a.name, "issue-triage"), cron: field(a.cron, "0 9 * * 1-5"), repo: field(this.tilde(a.repo), "~/Projects/myapp"),
       model: field(a.model, "agent default"), timeout: field(String(a.timeout_minutes ?? 60), "60"),
       mcp: field(this.tilde(a.mcp_config), "optional: path to an MCP servers JSON"),
+      // An entry that runs a command (no agent) is edited as one; new ones are agents.
+      command: a.command ? field(a.command, "") : null,
       prompt: TextareaState.new({ placeholder: "What should the agent do each time?", value: a.prompt ?? "" }),
       result: null, seq: 0,
     };
@@ -190,11 +192,15 @@ export default class Automations extends View {
     const f = this.form, num = parseInt(f.timeout.value(), 10);
     const expand = (p) => (p.startsWith("~/") && this.home ? this.home + p.slice(1) : p);
     // On top of the entry as it was, so what the form doesn't show (close_when_no_action, agent_args…) stays.
-    return {
+    const entry = {
       ...f.base, name: f.name.value().trim(), cron: f.cron.value().trim(), repo: expand(f.repo.value().trim()),
       workspace: f.workspace, workspace_id: f.workspace === "existing" ? f.workspace_id : "",
-      agent: f.template ? "" : f.agent, template: f.template, model: f.template ? "" : f.model.value().trim(),
-      prompt: f.prompt.value(), mcp_config: expand(f.mcp.value().trim()), timeout_minutes: Number.isFinite(num) ? num : 0,
+      timeout_minutes: Number.isFinite(num) ? num : 0,
+    };
+    if (f.command) return { ...entry, command: f.command.value().trim() };
+    return {
+      ...entry, agent: f.template ? "" : f.agent, template: f.template, model: f.template ? "" : f.model.value().trim(),
+      prompt: f.prompt.value(), mcp_config: expand(f.mcp.value().trim()),
     };
   }
 
@@ -334,7 +340,7 @@ export default class Automations extends View {
       .child(h_flex().gap(7).items_center().child(this.dot(a, t)).child(div().flex_1().min_w(0).truncate().font_semibold().child(a.name))
         .child(this.button(`run-${a.name}`, "▶", t, (cx) => this.act(cx, ["run", a.name, "--bg"]), { px: 6, h: 22 })))
       .child(div().pl(15).text_size(11).text_color(t.muted).truncate().child(sub))
-      .child(div().pl(15).text_size(11).text_color(t.dim).truncate().child(`${a.template ? "template " + a.template : a.agent + (a.model ? " · " + a.model : "")} · ${a.workspace}`));
+      .child(div().pl(15).text_size(11).text_color(t.dim).truncate().child(`${a.command ? "command" : a.template ? "template " + a.template : a.agent + (a.model ? " · " + a.model : "")} · ${a.workspace}`));
   }
 
   renderDetail(t, cx) {
@@ -360,7 +366,7 @@ export default class Automations extends View {
         .child(kv("Repo", this.tilde(a.repo)))
         .child(kv("Runs in", WORKSPACES.find(([w]) => w === a.workspace)?.[1] ?? a.workspace))
         .child(kv(a.template ? "Template" : "Agent", a.template || `${a.agent}${a.model ? " · " + a.model : ""}`)))
-      .child(div().p(8).rounded(7).bg(t.raised).text_size(12).text_color(t.muted).child(a.prompt || a.workflow || ""))
+      .child(div().p(8).rounded(7).bg(t.raised).text_size(12).text_color(t.muted).child(a.prompt || a.workflow || a.command || ""))
       .child(div().pt(4).text_size(11).font_semibold().text_color(t.dim).child("HISTORY"))
       .children(runs.length ? runs.map((r) => h_flex().id(`h-${r.run_id}`).gap(8).px(6).py(4).rounded(6).items_center().cursor_pointer()
         .hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.open(r, cx))
@@ -400,15 +406,16 @@ export default class Automations extends View {
         // Labels on that machine use its own ids, without the app's machine/ prefix.
         spaces().filter((s) => (s.machine ?? null) === this.machine).map((s) => [s.id.split("/").pop(), s.name]), f.workspace_id, t,
         (v, cx) => { f.workspace_id = v; this.preview(cx); cx.notify(); })))
-      .child(label("AGENT")).child(this.pills("f-agent", agents, agentValue, t, (v, cx) => {
+      .when(Boolean(f.command), (el) => el.child(label("COMMAND")).child(input("f-command", f.command)))
+      .when(!f.command, (el) => el.child(label("AGENT")).child(this.pills("f-agent", agents, agentValue, t, (v, cx) => {
         if (v.startsWith("template:")) { f.template = v.slice(9); f.agent = ""; } else { f.template = ""; f.agent = v; }
         this.preview(cx); cx.notify();
       }))
-      .when(!f.template, (el) => el.child(label("MODEL")).child(input("f-model", f.model)))
-      .child(label("PROMPT")).child(div().id("f-prompt").p(8).rounded(7).border_1().border_color(t.input)
-        .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Textarea.new(f.prompt).w_full().text_size(12)))
+        .when(!f.template, (el) => el.child(label("MODEL")).child(input("f-model", f.model)))
+        .child(label("PROMPT")).child(div().id("f-prompt").p(8).rounded(7).border_1().border_color(t.input)
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Textarea.new(f.prompt).w_full().text_size(12))))
       .child(label("TIMEOUT (MINUTES)")).child(input("f-timeout", f.timeout))
-      .child(label("MCP CONFIG")).child(input("f-mcp", f.mcp))
+      .when(!f.command, (el) => el.child(label("MCP CONFIG")).child(input("f-mcp", f.mcp)))
       .child(div().pt(8).text_size(12)
         .when(Boolean(res?.problem), (el) => el.text_color(t.ansi1).child(res.problem))
         .when(Boolean(res && !res.problem && res.next), (el) => el.text_color(t.muted)

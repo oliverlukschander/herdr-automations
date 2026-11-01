@@ -506,3 +506,32 @@ func TestHCLoadsTheAgentsThatReportTheirState(t *testing.T) {
 		}
 	}
 }
+
+func TestCommand(t *testing.T) {
+	cases := []struct {
+		backend, entry, want string
+	}{
+		{"hc", `command: "python3 export.py"`, ""},
+		{"herdr", `command: "python3 export.py"`, "command requires backend: hc"},
+		{"hc", `command: "python3 export.py", prompt: p`, "exactly one of prompt, workflow or command"},
+		{"hc", `command: "python3 export.py", agent: claude`, "command runs no agent"},
+		{"hc", `command: "python3 export.py", model: opus`, "command runs no agent"},
+	}
+	for _, c := range cases {
+		withConfig(t, "backend: "+c.backend+"\nautomations:\n  - {name: c, cron: \"@daily\", repo: /x, "+c.entry+"}\n")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.want == "" {
+			// No agent filled in either: there is none.
+			if len(cfg.Automations) != 1 || cfg.Automations[0].Agent != "" {
+				t.Fatalf("%s %s: got %+v %+v", c.backend, c.entry, cfg.Automations, cfg.Invalid)
+			}
+			continue
+		}
+		if len(cfg.Invalid) != 1 || !strings.Contains(cfg.Invalid[0].Message, c.want) {
+			t.Fatalf("%s %s: want %q, got %+v", c.backend, c.entry, c.want, cfg.Invalid)
+		}
+	}
+}

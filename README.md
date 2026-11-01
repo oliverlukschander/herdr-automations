@@ -189,7 +189,8 @@ automations:
 report whether somebody needs to act: the prompt names a command to run,
 `herdr-automations report --file <path> --action yes|no --summary "…"`. A run that
 reports `no` ends its terminal and stays out of the inbox; one that reports `yes`, or
-reports nothing, stays open there with its summary. `history` and `list` show the
+reports nothing, stays open there with its summary. A `command:` finds the path in
+`$HERDR_AUTOMATION_REPORT`, which `report` reads when `--file` is left out. `history` and `list` show the
 verdict.
 
 A run in `worktree` mode checks out where the app's own **New worktree…** would
@@ -222,7 +223,9 @@ reports its state to herdr-core, or a finished run can't be told from a stuck on
 `claude`, `grok` and `pi` (measured), `codex` (assumed, untested). The form offers the ones
 installed. Other kinds are refused when the file loads; the TUI, which reads agents'
 screens itself, runs them all. `workflow:` and `session:`
-belong to the TUI and are refused too. A daemon started by a TUI session still exits
+belong to the TUI and are refused too; `command:` runs a shell command in the run's
+terminal instead, with no agent, done on exit 0 and failed otherwise. The app closes
+its pane when it exits, so a failure shows only its exit code in the inbox. A daemon started by a TUI session still exits
 with the last one under `backend: herdr`; the login service never does.
 
 ## How a run works
@@ -254,6 +257,7 @@ automations:
     model: sonnet                 # optional → --model; kinds without the flag are caught on load
     template: reviewer            # hc only, instead of agent + model: an hc template, prompt as its task
     prompt: "…"                   # OR workflow: <name>  (delegates to hwf run)
+                                  # OR command: "…"  (hc only: a shell command, no agent; done on exit 0)
     mcp_config: ~/.config/mcp/github.json   # optional → --mcp-config
     agent_args: ["--verbose"]               # optional, verbatim agent flags
     timeout_minutes: 60           # optional bound on the run

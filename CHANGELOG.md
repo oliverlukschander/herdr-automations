@@ -4,6 +4,10 @@ What changed for someone using the plugin. Dates are release dates.
 
 ## Unreleased
 
+- `command:` (hc only) runs a shell command in the run's terminal, with no
+  agent: done on exit 0, failed otherwise. With `close_when_no_action` it gets
+  its report path as `$HERDR_AUTOMATION_REPORT`. The panel shows and edits
+  such entries; new ones it makes are still agents.
 - `agent: grok` runs under `backend: hc`. Measured: grok reports working
   through its tool calls and done when it ends, so a finished run is told
   from a stuck one.
