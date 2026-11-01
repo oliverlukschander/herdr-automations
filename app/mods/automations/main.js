@@ -3,10 +3,14 @@
 // Everything goes through the herdr-automations CLI (`… --json`): this mod
 // never reads or writes automations.yaml or history.jsonl itself. The files
 // are watched only to know when to ask again.
+//
+// `machine` (a prop, and the switch in the header) picks whose automations:
+// null for this one, else a machine from `hc machine ls`, where the CLI then
+// runs through `exec`'s `on`.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
-import { exec, hc, home, theme, terminals, spaces, run, notify, pickFolder, watchFolder, knownAgents } from "herdr";
+import { exec, hc, theme, terminals, spaces, machines, run, notify, pickFolder, watchFolder, knownAgents, props, closeOverlay } from "herdr";
 
 const PRESETS = [
   ["Hourly", "0 * * * *"],
@@ -17,12 +21,13 @@ const PRESETS = [
 ];
 // The agents hc can hand a prompt to and watch to the end (config.KindTakesPromptArg).
 // The form offers the ones installed here.
-const AGENTS = ["claude", "codex", "pi"];
+const AGENTS = ["claude", "codex", "grok", "pi"];
 const WORKSPACES = [["worktree", "New worktree"], ["root", "Repo root"], ["existing", "Existing space"]];
 const FINISHED = new Set(["done", "failed", "cancelled"]);
 
 const human = (cron) => PRESETS.find(([, c]) => c === cron)?.[0] ?? cron;
-const tilde = (p) => (p && p.startsWith(home()) ? "~" + p.slice(home().length) : p ?? "");
+// A run's own word on whether somebody needs to act (close_when_no_action), else its status.
+const verdict = (r) => (r.action == null ? r.status : r.action ? "action" : "no action");
 function ago(iso) {
   const s = (Date.now() - Date.parse(iso)) / 1000;
   if (s < 60) return "now";
@@ -46,50 +51,72 @@ function duration(sec) {
 
 export default class Automations extends View {
   init(_props, cx) {
+    this.handle = cx.focus_handle();
+    // props(), not init's argument: an overlay gets its props only there.
+    this.show(props()?.machine ?? null, cx);
+    // Next-run times and the scheduler's pid; another machine's files can't be watched.
+    cx.timer.every(30000, (cx) => this.refresh(cx));
+  }
+
+  show(machine, cx) {
+    this.machine = machine;
+    this.bin = this.home = null;
     this.list = null; // `ls --json`
     this.runs = []; // `history --json`
     this.view = { kind: "list" }; // list | detail {name} | form {original}
-    this.error = null; this.note = null;
+    this.form = null; this.error = null; this.note = null;
     this.known = null; // run ids already seen by this copy, to toast only new failures
-    this.handle = cx.focus_handle();
     cx.spawn(async (cx) => {
-      this.bin = await this.locate();
+      let found, error;
+      try { found = await this.locate(machine); } catch (e) { error = String(e.message ?? e); }
+      if (machine !== this.machine) return; // switched meanwhile
+      if (error) { this.error = error; cx.notify(); return; }
+      [this.bin, this.home] = found;
       await this.refresh(cx);
-      this.watch(cx);
+      if (!machine) this.watch(cx);
     });
-    cx.timer.every(30000, (cx) => this.refresh(cx)); // next-run times and the scheduler's pid
   }
 
-  // The CLI on PATH, else where install.sh and the dev symlink put it.
-  async locate() {
-    try { if ((await exec("herdr-automations", ["version"])).code === 0) return "herdr-automations"; } catch {}
-    return `${home()}/.local/bin/herdr-automations`;
+  // The CLI on that machine's PATH, else where install.sh and the dev symlink
+  // put it; and the machine's home, to write paths with ~.
+  async locate(machine) {
+    const r = await exec("sh", ["-c", 'command -v herdr-automations || echo "$HOME/.local/bin/herdr-automations"; echo "$HOME"'], { on: machine });
+    return r.stdout.trim().split("\n");
   }
 
   async cli(args) {
-    const r = await exec(this.bin, args);
+    const r = await exec(this.bin, args, { on: this.machine });
     if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().replace(/^error: /, ""));
     return r.stdout;
   }
 
   async refresh(cx) {
+    const machine = this.machine;
     if (!this.bin) return;
     try {
-      this.list = JSON.parse(await this.cli(["ls", "--json"]));
-      this.runs = JSON.parse(await this.cli(["history", "--json"]));
-      this.error = null;
+      const list = JSON.parse(await this.cli(["ls", "--json"]));
+      const runs = JSON.parse(await this.cli(["history", "--json"]));
+      if (machine !== this.machine) return; // switched meanwhile
+      this.list = list; this.runs = runs; this.error = null;
       this.announce();
-    } catch (e) { this.error = String(e.message ?? e); }
+    } catch (e) { if (machine === this.machine) this.error = String(e.message ?? e); }
     cx.notify();
   }
 
-  // Config and state folders: a change there is a change to show.
+  // Config and state folders: a change there is a change to show. Once, for
+  // this machine, however often the switch comes back to it.
   watch(cx) {
     const dirs = [this.list?.config?.replace(/\/[^/]+$/, ""), this.list?.state].filter(Boolean);
+    if (this.watching || !dirs.length) return;
+    this.watching = true;
     for (const dir of dirs) cx.spawn(async (cx) => {
-      for (;;) { try { await watchFolder(dir); } catch { return; } await this.refresh(cx); }
+      for (;;) { try { await watchFolder(dir); } catch { return; } if (!this.machine) await this.refresh(cx); }
     });
   }
+
+  tilde(p) { return p && this.home && p.startsWith(this.home) ? "~" + p.slice(this.home.length) : p ?? ""; }
+  // The app's address for a terminal the CLI names on its own machine.
+  at(address) { return this.machine ? `${this.machine}/${address}` : address; }
 
   // A failure finds you (ADR 0007): toast runs that failed or were missed
   // since this copy started. The first read only learns what is there.
@@ -100,14 +127,17 @@ export default class Automations extends View {
       notify({
         title: `${r.automation} ${r.status === "failed" ? "failed" : "missed a run"}`,
         body: r.error ?? "", level: r.status === "failed" ? "error" : "warning",
-        ...(r.terminal && this.live(r.terminal) ? { action: { name: "pane.focus", args: { terminal: r.terminal } } } : {}),
+        ...(r.terminal && this.live(r.terminal) ? { action: { name: "pane.focus", args: { terminal: this.at(r.terminal) } } } : {}),
       });
     }
     this.known = ids;
   }
 
-  live(address) { return terminals().find((t) => t.address === address && t.state === "live"); }
-  liveFor(name) { return terminals().find((t) => t.labels?.automation === name && t.state === "live"); }
+  live(address) { return terminals().find((t) => t.address === this.at(address) && t.state === "live"); }
+  liveFor(name) {
+    return terminals().find((t) => t.labels?.automation === name && t.state === "live"
+      && (t.address.includes("/") ? t.address.split("/")[0] : null) === this.machine);
+  }
 
   act(cx, args, then) {
     this.note = null;
@@ -119,7 +149,7 @@ export default class Automations extends View {
 
   open(run_, cx) {
     if (!run_.seen && FINISHED.has(run_.status)) this.act(cx, ["seen", run_.run_id]);
-    if (run_.terminal && this.live(run_.terminal)) run("pane.focus", { terminal: run_.terminal });
+    if (run_.terminal && this.live(run_.terminal)) run("pane.focus", { terminal: this.at(run_.terminal) });
     else { this.view = { kind: "detail", name: run_.automation }; cx.notify(); }
   }
 
@@ -135,20 +165,24 @@ export default class Automations extends View {
       return s;
     };
     this.form = {
-      original, workspace: a.workspace ?? "worktree", workspace_id: a.workspace_id ?? "",
+      original, base: a, workspace: a.workspace ?? "worktree", workspace_id: a.workspace_id ?? "",
       agent: a.template ? "" : a.agent ?? "claude", template: a.template ?? "",
-      name: field(a.name, "issue-triage"), cron: field(a.cron, "0 9 * * 1-5"), repo: field(tilde(a.repo), "~/Projects/myapp"),
+      name: field(a.name, "issue-triage"), cron: field(a.cron, "0 9 * * 1-5"), repo: field(this.tilde(a.repo), "~/Projects/myapp"),
       model: field(a.model, "agent default"), timeout: field(String(a.timeout_minutes ?? 60), "60"),
-      mcp: field(tilde(a.mcp_config), "optional: path to an MCP servers JSON"),
+      mcp: field(this.tilde(a.mcp_config), "optional: path to an MCP servers JSON"),
+      // An entry that runs a command (no agent) is edited as one; new ones are agents.
+      command: a.command ? field(a.command, "") : null,
       prompt: TextareaState.new({ placeholder: "What should the agent do each time?", value: a.prompt ?? "" }),
       result: null, seq: 0,
     };
     this.form.prompt.set_auto_grow(4, 12);
     this.form.prompt.on("change", (_e, cx) => this.preview(cx));
     this.view = { kind: "form" };
+    const on = this.machine;
     cx.spawn(async (cx) => {
-      try { this.templates = JSON.parse((await hc(["templates", "--json"])).stdout).templates ?? []; } catch { this.templates = []; }
-      try { this.installed = (await knownAgents()).filter((a) => a.installed).map((a) => a.key); } catch { this.installed = null; }
+      const templates = on ? exec("hc", ["templates", "--json"], { on }) : hc(["templates", "--json"]);
+      try { this.templates = JSON.parse((await templates).stdout).templates ?? []; } catch { this.templates = []; }
+      try { this.installed = (await knownAgents({ on })).filter((a) => a.installed).map((a) => a.key); } catch { this.installed = null; }
       cx.notify();
     });
     this.preview(cx);
@@ -156,19 +190,24 @@ export default class Automations extends View {
 
   entry() {
     const f = this.form, num = parseInt(f.timeout.value(), 10);
-    const expand = (p) => (p.startsWith("~/") ? home() + p.slice(1) : p);
-    return {
-      name: f.name.value().trim(), cron: f.cron.value().trim(), repo: expand(f.repo.value().trim()),
+    const expand = (p) => (p.startsWith("~/") && this.home ? this.home + p.slice(1) : p);
+    // On top of the entry as it was, so what the form doesn't show (close_when_no_action, agent_args…) stays.
+    const entry = {
+      ...f.base, name: f.name.value().trim(), cron: f.cron.value().trim(), repo: expand(f.repo.value().trim()),
       workspace: f.workspace, workspace_id: f.workspace === "existing" ? f.workspace_id : "",
-      agent: f.template ? "" : f.agent, template: f.template, model: f.template ? "" : f.model.value().trim(),
-      prompt: f.prompt.value(), mcp_config: expand(f.mcp.value().trim()), timeout_minutes: Number.isFinite(num) ? num : 0,
+      timeout_minutes: Number.isFinite(num) ? num : 0,
+    };
+    if (f.command) return { ...entry, command: f.command.value().trim() };
+    return {
+      ...entry, agent: f.template ? "" : f.agent, template: f.template, model: f.template ? "" : f.model.value().trim(),
+      prompt: f.prompt.value(), mcp_config: expand(f.mcp.value().trim()),
     };
   }
 
   async put(dryRun) {
     const f = this.form, args = ["put", ...(f.original ? ["--original", f.original] : []), ...(dryRun ? ["--dry-run"] : [])];
     // exec has no stdin: hand the JSON over through the shell.
-    const r = await exec("sh", ["-c", 'bin=$1 json=$2; shift 2; printf %s "$json" | "$bin" "$@"', "sh", this.bin, JSON.stringify(this.entry()), ...args]);
+    const r = await exec("sh", ["-c", 'bin=$1 json=$2; shift 2; printf %s "$json" | "$bin" "$@"', "sh", this.bin, JSON.stringify(this.entry()), ...args], { on: this.machine });
     if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
     return JSON.parse(r.stdout);
   }
@@ -236,10 +275,13 @@ export default class Automations extends View {
       .when(back, (el) => el.child(this.button("back", "‹", t, (cx) => { this.view = { kind: "list" }; this.form = null; cx.notify(); }, { px: 7 })))
       .child(div().font_semibold().child("Automations"))
       .child(div().flex_1())
+      .when(machines().length > 1, (el) => el.child(this.pills("machine",
+        machines().map(({ name }) => [name ?? "", name ?? "local"]), this.machine ?? "", t, (v, cx) => this.show(v || null, cx))))
       .when(Boolean(this.list), (el) => el
         .child(div().text_size(11).text_color(paused ? t.blocked : t.dim).child(paused ? "All paused" : "Active"))
         .child(this.switch_("pause-all", !paused, t, (cx) => this.act(cx, [paused ? "resume" : "pause", "--all"]))))
-      .when(!back, (el) => el.child(this.button("new", "+", t, (cx) => this.edit(null, cx), { px: 8 })));
+      .when(!back, (el) => el.child(this.button("new", "+", t, (cx) => this.edit(null, cx), { px: 8 })))
+      .when(Boolean(props()?.overlay), (el) => el.child(this.button("close", "×", t, () => closeOverlay(props().overlay), { px: 7 })));
   }
 
   banner(t, cx) {
@@ -277,16 +319,16 @@ export default class Automations extends View {
   }
 
   inboxRow(r, t) {
-    const ok = r.status === "done", color = ok ? t.ansi2 : r.status === "failed" ? t.ansi1 : t.dim;
+    const color = r.action ? t.blocked : r.status === "done" ? t.ansi2 : r.status === "failed" ? t.ansi1 : t.dim;
     return v_flex().id(`inbox-${r.run_id}`).mx(8).px(8).py(6).gap(2).rounded(7).cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => this.open(r, cx))
       .child(h_flex().gap(6).items_center()
         .child(div().size(7).rounded(4).flex_none().bg(color))
         .child(div().flex_1().min_w(0).truncate().child(r.automation))
-        .child(div().text_size(11).text_color(color).child(r.status))
+        .child(div().text_size(11).text_color(color).child(verdict(r)))
         .child(div().text_size(11).text_color(t.dim).child(ago(r.at))))
-      .child(div().pl(13).text_size(11).text_color(t.muted).truncate()
-        .child(r.error || `${duration(r.seconds)}${r.terminal && this.live(r.terminal) ? " · open" : ""}`));
+      .child(div().pl(13).text_size(11).text_color(t.muted).when(!r.summary, (el) => el.truncate())
+        .child(r.summary || r.error || `${duration(r.seconds)}${r.terminal && this.live(r.terminal) ? " · open" : ""}`));
   }
 
   row(a, t) {
@@ -298,7 +340,7 @@ export default class Automations extends View {
       .child(h_flex().gap(7).items_center().child(this.dot(a, t)).child(div().flex_1().min_w(0).truncate().font_semibold().child(a.name))
         .child(this.button(`run-${a.name}`, "▶", t, (cx) => this.act(cx, ["run", a.name, "--bg"]), { px: 6, h: 22 })))
       .child(div().pl(15).text_size(11).text_color(t.muted).truncate().child(sub))
-      .child(div().pl(15).text_size(11).text_color(t.dim).truncate().child(`${a.template ? "template " + a.template : a.agent + (a.model ? " · " + a.model : "")} · ${a.workspace}`));
+      .child(div().pl(15).text_size(11).text_color(t.dim).truncate().child(`${a.command ? "command" : a.template ? "template " + a.template : a.agent + (a.model ? " · " + a.model : "")} · ${a.workspace}`));
   }
 
   renderDetail(t, cx) {
@@ -321,15 +363,15 @@ export default class Automations extends View {
       .child(v_flex().gap(4)
         .child(kv("Schedule", `${human(a.cron)}${human(a.cron) !== a.cron ? ` (${a.cron})` : ""}`))
         .child(kv("Next", a.disabled ? "paused" : this.list.paused ? "held: all paused" : until(a.next)))
-        .child(kv("Repo", tilde(a.repo)))
+        .child(kv("Repo", this.tilde(a.repo)))
         .child(kv("Runs in", WORKSPACES.find(([w]) => w === a.workspace)?.[1] ?? a.workspace))
-        .child(kv(a.template ? "Template" : "Agent", a.template || `${a.agent}${a.model ? " · " + a.model : ""}`)))
-      .child(div().p(8).rounded(7).bg(t.raised).text_size(12).text_color(t.muted).child(a.prompt || a.workflow || ""))
+        .when(!a.command, (el) => el.child(kv(a.template ? "Template" : "Agent", a.template || `${a.agent}${a.model ? " · " + a.model : ""}`))))
+      .child(div().p(8).rounded(7).bg(t.raised).text_size(12).text_color(t.muted).child(a.prompt || a.workflow || a.command || ""))
       .child(div().pt(4).text_size(11).font_semibold().text_color(t.dim).child("HISTORY"))
       .children(runs.length ? runs.map((r) => h_flex().id(`h-${r.run_id}`).gap(8).px(6).py(4).rounded(6).items_center().cursor_pointer()
         .hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.open(r, cx))
-        .child(div().w(66).flex_none().text_size(11).text_color(r.status === "done" ? t.ansi2 : r.status === "failed" || r.status === "missed" ? t.ansi1 : t.muted).child(r.status))
-        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(r.error || (r.seconds ? duration(r.seconds) : "")))
+        .child(div().w(66).flex_none().text_size(11).text_color(r.action ? t.blocked : r.status === "done" ? t.ansi2 : r.status === "failed" || r.status === "missed" ? t.ansi1 : t.muted).child(verdict(r)))
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(r.summary || r.error || (r.seconds ? duration(r.seconds) : "")))
         .child(div().flex_none().text_size(11).text_color(t.dim).child(ago(r.at))))
         : [div().text_size(12).text_color(t.dim).child("No runs yet.")]);
   }
@@ -353,24 +395,27 @@ export default class Automations extends View {
       .child(label("SCHEDULE")).child(this.pills("f-preset", presets, preset, t, (v, cx) => { if (v !== "custom") f.cron.set_value(v); this.preview(cx); cx.notify(); }))
       .child(input("f-cron", f.cron))
       .child(label("REPO")).child(h_flex().gap(6).child(div().flex_1().child(input("f-repo", f.repo)))
-        .child(this.button("f-pick", "Choose…", t, (cx) => cx.spawn(async (cx) => {
+        // The picker shows this machine's folders; another machine's repo is typed.
+        .when(!this.machine, (el) => el.child(this.button("f-pick", "Choose…", t, (cx) => cx.spawn(async (cx) => {
           const dir = await pickFolder({ prompt: "Repository for this automation" });
-          if (dir) { f.repo.set_value(tilde(dir)); this.preview(cx); }
+          if (dir) { f.repo.set_value(this.tilde(dir)); this.preview(cx); }
           cx.notify();
-        }), { h: 30 })))
+        }), { h: 30 }))))
       .child(label("RUNS IN")).child(this.pills("f-ws", WORKSPACES, f.workspace, t, (v, cx) => { f.workspace = v; this.preview(cx); cx.notify(); }))
       .when(f.workspace === "existing", (el) => el.child(this.pills("f-space",
-        spaces().filter((s) => !s.machine).map((s) => [s.id, s.name]), f.workspace_id, t,
+        // Labels on that machine use its own ids, without the app's machine/ prefix.
+        spaces().filter((s) => (s.machine ?? null) === this.machine).map((s) => [s.id.split("/").pop(), s.name]), f.workspace_id, t,
         (v, cx) => { f.workspace_id = v; this.preview(cx); cx.notify(); })))
-      .child(label("AGENT")).child(this.pills("f-agent", agents, agentValue, t, (v, cx) => {
+      .when(Boolean(f.command), (el) => el.child(label("COMMAND")).child(input("f-command", f.command)))
+      .when(!f.command, (el) => el.child(label("AGENT")).child(this.pills("f-agent", agents, agentValue, t, (v, cx) => {
         if (v.startsWith("template:")) { f.template = v.slice(9); f.agent = ""; } else { f.template = ""; f.agent = v; }
         this.preview(cx); cx.notify();
       }))
-      .when(!f.template, (el) => el.child(label("MODEL")).child(input("f-model", f.model)))
-      .child(label("PROMPT")).child(div().id("f-prompt").p(8).rounded(7).border_1().border_color(t.input)
-        .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Textarea.new(f.prompt).w_full().text_size(12)))
+        .when(!f.template, (el) => el.child(label("MODEL")).child(input("f-model", f.model)))
+        .child(label("PROMPT")).child(div().id("f-prompt").p(8).rounded(7).border_1().border_color(t.input)
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Textarea.new(f.prompt).w_full().text_size(12))))
       .child(label("TIMEOUT (MINUTES)")).child(input("f-timeout", f.timeout))
-      .child(label("MCP CONFIG")).child(input("f-mcp", f.mcp))
+      .when(!f.command, (el) => el.child(label("MCP CONFIG")).child(input("f-mcp", f.mcp)))
       .child(div().pt(8).text_size(12)
         .when(Boolean(res?.problem), (el) => el.text_color(t.ansi1).child(res.problem))
         .when(Boolean(res && !res.problem && res.next), (el) => el.text_color(t.muted)

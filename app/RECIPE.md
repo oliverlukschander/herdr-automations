@@ -30,17 +30,21 @@ A card filling its block (`rounded(10)`, `border` 1px, `background`), three part
 top to bottom:
 
 - **Header**, 42px, bottom border: "Automations" (semibold), then right-aligned
-  "Active" / "All paused" (11px; `dim`, or `blocked` when paused), a 30×17 switch
-  (`accent` when on, `input` when off, a 13px `background` knob), and a `+` button.
-  In the detail and form views a `‹` button comes first.
+  with more than one machine in `machines()`, a pill per machine ("local", then each
+  name), then "Active" / "All paused" (11px; `dim`, or `blocked` when paused), a 30×17
+  switch (`accent` when on, `input` when off, a 13px `background` knob), a `+` button,
+  and `×` when the panel is an overlay. In the detail and form views a `‹` button
+  comes first.
 - **Banner**, only when no scheduler holds the lock: `blocked` at 13% alpha,
   "Scheduler stopped: nothing will run on time." and a solid `Start` button.
 - **Body**, scrolling, one of three views:
   - **List.** Section labels in 11px semibold `dim` caps.
     `INBOX` with a count pill and, when non-empty, "Mark all read" at the right.
-    Each inbox row: a 7px dot (`ansi2` done, `ansi1` failed, `dim` cancelled), the
-    automation, its status in the same color, "9m ago"; below, indented, the error
-    or the duration and "· open" while its terminal is live. Empty: "Nothing new."
+    Each inbox row: a 7px dot (`ansi2` done, `ansi1` failed, `dim` cancelled,
+    `blocked` when its report says action), the automation, its status in the same
+    color ("action" / "no action" for a run that reported), "9m ago"; below, indented,
+    the report's summary (wrapped), else the error, else the duration and "· open"
+    while its terminal is live. Empty: "Nothing new."
     Then `AUTOMATIONS`: per entry an 8px dot, the name (semibold), a `▶` button;
     below in 11px `muted` "Weekdays 9:00 · Mon 09:00" (or "paused", "running ·
     working"); below in `dim` "claude · sonnet · worktree". Entries that did not
@@ -48,12 +52,12 @@ top to bottom:
   - **Detail.** Dot and name (15px semibold); buttons `Run now` (solid), `Pause` /
     `Resume`, `Edit`, `Delete` (`ansi1` text). Key–value rows (78px `dim` keys):
     Schedule, Next, Repo, Runs in, Agent. The prompt on a `raised` block. `HISTORY`:
-    status (66px, colored), error or duration, "3h ago".
+    status or verdict (66px, colored), summary, error or duration, "3h ago".
   - **Form.** "New automation" or "Edit <name>". Fields, each under an 11px label:
     NAME; SCHEDULE as pills (Hourly, Every morning, Weekdays 9:00, Mondays 9:00,
-    Fridays 17:00, Custom) over a cron input; REPO with `Choose…`; RUNS IN as pills
-    (New worktree, Repo root, Existing space, the last opening a pill per local
-    space); AGENT as pills (claude, codex, pi, then each hc template); MODEL (hidden
+    Fridays 17:00, Custom) over a cron input; REPO with `Choose…` (typed on another
+    machine); RUNS IN as pills (New worktree, Repo root, Existing space, the last
+    opening a pill per space on the panel's machine); AGENT as pills (claude, codex, grok, pi, then each hc template); MODEL (hidden
     for a template); PROMPT (textarea, 4–12 rows); TIMEOUT (MINUTES); MCP CONFIG.
     Below: "Next: in 3h, Mon 09:00, Tue 09:00" in `muted`, or the problem in `ansi1`.
     `Cancel`, `Save` (solid) at the right.
@@ -79,6 +83,13 @@ top to bottom:
   `notify` (error / warning); clicking it focuses the run's terminal when live.
 - **Refresh**: on a change in the config folder or the history folder
   (`watchFolder`), and every 30s for next-run times and the scheduler's state.
+  Another machine's folders can't be watched: it refreshes on the 30s timer only.
+- **Machine**: the `machine` prop picks whose automations, null for this one; a
+  machine pill switches. Every `exec` gets `{ on: machine }`, the CLI is looked up
+  on that machine (`command -v`, else `~/.local/bin`), and its runs' terminals are
+  `machine/t7` in `terminals()`. Saving the form keeps the entry's fields it
+  doesn't show (`close_when_no_action`, `agent_args`, `catch_up_minutes`).
+- **×**: `closeOverlay(props().overlay)`, shown only when opened as an overlay.
 
 ## Built from
 
@@ -89,8 +100,9 @@ top to bottom:
 - A tab-bar button: in a clone of the shipped `tabs` mod, one more
   `panelButton("automations", "Automations", "mods/automations/automations.svg")`,
   and `"automations"` always in its `enabled` list.
-- `herdr`: `exec`, `hc`, `home`, `theme`, `terminals`, `spaces`, `run`
-  (`pane.focus`), `notify`, `pickFolder`, `watchFolder`. `gpui-base`: `InputState`,
+- `herdr`: `exec`, `hc`, `theme`, `terminals`, `spaces`, `machines`, `run`
+  (`pane.focus`), `notify`, `pickFolder`, `watchFolder`, `knownAgents`, `props`,
+  `closeOverlay`. `gpui-base`: `InputState`,
   `Input`, `TextareaState`, `Textarea`, `v_flex`, `h_flex`.
 - The CLI it calls: `ls --json`, `history --json`, `put [--original n] [--dry-run]`
   (JSON on stdin), `rm`, `seen <id>|--all`, `run <name> --bg`,
@@ -111,7 +123,7 @@ top to bottom:
 - **Symlinked mod folders are not reloaded** on change; copy the files.
 - **`toLocaleDateString` options are ignored** by the runtime: spell weekdays out.
 - `InputState` / `TextareaState` only in `init` or handlers, never in `render`.
-- Under `backend: hc` only `claude`, `codex` and `pi` take a prompt; the form offers
+- Under `backend: hc` only `claude`, `codex`, `grok` and `pi` take a prompt; the form offers
   those and the hc templates.
 
 ## Done when

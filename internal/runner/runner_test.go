@@ -16,6 +16,7 @@ import (
 	"github.com/DnzzL/herdr-automations/internal/history"
 	"github.com/DnzzL/herdr-automations/internal/host"
 	"github.com/DnzzL/herdr-automations/internal/notify"
+	"github.com/DnzzL/herdr-automations/internal/report"
 )
 
 // fakeSink is notify's test seam (internal/notify/notify_test.go), reused here
@@ -36,6 +37,12 @@ type fakeHost struct {
 
 	mu       sync.Mutex
 	timeouts []time.Duration
+	closed   []host.Session
+}
+
+func (f *fakeHost) Close(s host.Session) error {
+	f.closed = append(f.closed, s)
+	return nil
 }
 
 func (f *fakeHost) Provision(a config.Automation) (host.Session, error) {
@@ -325,5 +332,110 @@ func TestHistoryRemembersWhichSessionARunLivesIn(t *testing.T) {
 	}
 	if got := runs(t)[0].Session; got != "automations" {
 		t.Fatalf("session = %q, want automations: the board cannot find w1 without it", got)
+	}
+}
+
+// reporting is a host whose run reports what action says ("" writes none),
+// the way an agent calls `herdr-automations report` from its terminal.
+func reporting(t *testing.T, action string) *fakeHost {
+	return &fakeHost{do: func(_ host.Session, a config.Automation, _ time.Duration) error {
+		if !strings.Contains(a.Prompt, a.ReportPath) {
+			t.Errorf("the prompt does not name the report path %q:\n%s", a.ReportPath, a.Prompt)
+		}
+		if action == "" {
+			return nil
+		}
+		act := action == "yes"
+		return report.Write(a.ReportPath, report.Report{Action: &act, Summary: "inbox empty"})
+	}}
+}
+
+func TestCloseWhenNoAction(t *testing.T) {
+	cases := []struct {
+		action string // what the run reports; "" for nothing
+		status history.Status
+		closed bool // its terminal ended, and the run kept out of the inbox
+	}{
+		{"no", history.StatusDone, true},
+		{"yes", history.StatusDone, false},
+		{"", history.StatusFailed, false},
+	}
+	for _, c := range cases {
+		t.Run("action "+c.action, func(t *testing.T) {
+			t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+			h := reporting(t, c.action)
+			a := automation()
+			a.CloseWhenNoAction = true
+			_ = New(h).Run(a, "cron")
+
+			got := runs(t)[0]
+			if got.Status != c.status {
+				t.Fatalf("status %q, want %q (%s)", got.Status, c.status, got.Error)
+			}
+			if (len(h.closed) == 1) != c.closed || got.Seen != c.closed {
+				t.Fatalf("closed %v, seen %v; want %v", h.closed, got.Seen, c.closed)
+			}
+			if c.action != "" && (got.Action == nil || *got.Action != (c.action == "yes") || got.Summary != "inbox empty") {
+				t.Fatalf("verdict not recorded: %+v", got)
+			}
+			if leftovers, _ := filepath.Glob(filepath.Join(config.StateDir(), "reports", "*")); len(leftovers) != 0 {
+				t.Fatalf("reports left behind: %v", leftovers)
+			}
+		})
+	}
+}
+
+func TestWithoutCloseWhenNoActionNothingIsAsked(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	h := &fakeHost{do: func(_ host.Session, a config.Automation, _ time.Duration) error {
+		if a.Prompt != "go" || a.ReportPath != "" {
+			t.Errorf("prompt %q, report %q", a.Prompt, a.ReportPath)
+		}
+		return nil
+	}}
+	if err := New(h).Run(automation(), "cron"); err != nil {
+		t.Fatal(err)
+	}
+	if got := runs(t)[0]; got.Status != history.StatusDone || got.Action != nil || len(h.closed) != 0 {
+		t.Fatalf("got %+v, closed %v", got, h.closed)
+	}
+}
+
+// A command has no prompt to be told about its report; it finds the path in
+// its environment (the hc host puts it there), and closes the same way.
+func TestCloseWhenNoActionForACommand(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	h := &fakeHost{do: func(_ host.Session, a config.Automation, _ time.Duration) error {
+		if a.Prompt != "" || a.ReportPath == "" {
+			t.Errorf("prompt %q, report %q", a.Prompt, a.ReportPath)
+		}
+		no := false
+		return report.Write(a.ReportPath, report.Report{Action: &no, Summary: "nothing to export"})
+	}}
+	a := automation()
+	a.Agent, a.Prompt, a.Command, a.CloseWhenNoAction = "", "", "python3 export.py", true
+	if err := New(h).Run(a, "cron"); err != nil {
+		t.Fatal(err)
+	}
+	if got := runs(t)[0]; got.Status != history.StatusDone || len(h.closed) != 1 {
+		t.Fatalf("got %+v, closed %v", got, h.closed)
+	}
+}
+
+// A command that fails can still say why (an export writes where its log is),
+// and that is all there is to read once its pane has closed.
+func TestAFailedRunKeepsTheSummaryItReported(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	h := &fakeHost{do: func(_ host.Session, a config.Automation, _ time.Duration) error {
+		yes := true
+		_ = report.Write(a.ReportPath, report.Report{Action: &yes, Summary: "export failed, see run.log"})
+		return errors.New("the command exited with code 2")
+	}}
+	a := automation()
+	a.Agent, a.Prompt, a.Command, a.CloseWhenNoAction = "", "", "python3 export.py", true
+	_ = New(h).Run(a, "cron")
+	got := runs(t)[0]
+	if got.Status != history.StatusFailed || got.Error != "the command exited with code 2; export failed, see run.log" || len(h.closed) != 0 {
+		t.Fatalf("got %+v, closed %v", got, h.closed)
 	}
 }

@@ -73,6 +73,10 @@ type Automation struct {
 	Prompt string `yaml:"prompt,omitempty"`
 	// Workflow delegates execution to herdr-workflows: `hwf run <name>`.
 	Workflow string `yaml:"workflow,omitempty"`
+	// Command is a shell command the run's terminal runs, with no agent: done
+	// on exit 0, failed otherwise. With close_when_no_action it writes the
+	// report itself, at $HERDR_AUTOMATION_REPORT. hc backend only.
+	Command string `yaml:"command,omitempty"`
 	// MCPConfig is a path to an MCP servers JSON passed to the agent
 	// (claude: --mcp-config). Sugar over AgentArgs.
 	MCPConfig string `yaml:"mcp_config,omitempty"`
@@ -88,6 +92,14 @@ type Automation struct {
 	Session string `yaml:"session,omitempty"`
 	// Disabled keeps the entry in the file but out of the scheduler.
 	Disabled bool `yaml:"disabled,omitempty"`
+	// CloseWhenNoAction asks each run to report whether somebody needs to
+	// act (`herdr-automations report`), and ends a run's terminal when its
+	// report says nobody does. A run with action, or without a report, stays
+	// open for the panel's inbox. hc backend only.
+	CloseWhenNoAction bool `yaml:"close_when_no_action,omitempty"`
+	// ReportPath is where this run's report goes. Set by the runner for each
+	// run, never read from or written to the file.
+	ReportPath string `yaml:"-"`
 
 	// Line is where this entry starts in automations.yaml, 1-based, so an
 	// editor can be opened right at it. Set by Load, never written back.
@@ -133,7 +145,7 @@ func (a *Automation) applyDefaults() {
 	if a.Workspace == "" {
 		a.Workspace = WorkspaceWorktree
 	}
-	if a.Agent == "" {
+	if a.Agent == "" && a.Command == "" {
 		a.Agent = "claude"
 	}
 	if a.TimeoutMinutes <= 0 {
@@ -165,8 +177,14 @@ func (a *Automation) validate(backend Backend) error {
 	if a.Repo == "" {
 		return fmt.Errorf("%s: missing repo", a.Name)
 	}
-	if (a.Prompt == "") == (a.Workflow == "") {
-		return fmt.Errorf("%s: exactly one of prompt or workflow is required", a.Name)
+	n := 0
+	for _, work := range []string{a.Prompt, a.Workflow, a.Command} {
+		if work != "" {
+			n++
+		}
+	}
+	if n != 1 {
+		return fmt.Errorf("%s: exactly one of prompt, workflow or command is required", a.Name)
 	}
 	if a.Workspace != WorkspaceWorktree && a.Workspace != WorkspaceRoot && a.Workspace != WorkspaceExisting {
 		return fmt.Errorf("%s: workspace must be worktree, root or existing, got %q", a.Name, a.Workspace)
@@ -188,8 +206,14 @@ func (a *Automation) validate(backend Backend) error {
 	if a.Template != "" && backend != BackendHC {
 		return fmt.Errorf("%s: template requires backend: hc", a.Name)
 	}
-	if a.Template == "" && backend == BackendHC && !KindTakesPromptArg(a.Agent) {
-		return fmt.Errorf("%s: agent %q cannot take its prompt under backend: hc yet (claude, codex and pi can)", a.Name, a.Agent)
+	if a.CloseWhenNoAction && backend != BackendHC {
+		return fmt.Errorf("%s: close_when_no_action requires backend: hc", a.Name)
+	}
+	if a.Command != "" && backend != BackendHC {
+		return fmt.Errorf("%s: command requires backend: hc", a.Name)
+	}
+	if a.Template == "" && a.Command == "" && backend == BackendHC && !KindTakesPromptArg(a.Agent) {
+		return fmt.Errorf("%s: agent %q cannot take its prompt under backend: hc yet (claude, codex, grok and pi can)", a.Name, a.Agent)
 	}
 	if a.Workflow != "" && backend == BackendHC {
 		return fmt.Errorf("%s: workflow drives the Herdr TUI; it cannot run under backend: hc", a.Name)
@@ -231,11 +255,14 @@ func KindAcceptsModel(kind string) bool { return modelFlagKinds[kind] }
 // first message as a trailing argument, and they report their state to hc
 // (OSC 7501), without which a run can't be told done from stuck. Measured on
 // 2026-10-30: claude and pi report; opencode reports nothing; codex is
-// assumed from its CLI, not measured. Herdr's TUI watches agents' screens
+// assumed from its CLI, not measured. grok, on 2026-11-01: reports working
+// through every tool call and done once it ends, counting its turn then, as
+// pi does. Herdr's TUI watches agents' screens
 // itself, which is why it supports more of them.
 var promptArgKinds = map[string]bool{
 	"claude": true,
 	"codex":  true,
+	"grok":   true,
 	"pi":     true,
 }
 
@@ -305,6 +332,13 @@ func parse(raw []byte) (*Config, error) {
 			cfg.Invalid = append(cfg.Invalid, Diagnostic{
 				Name: a.Name, Line: a.Line,
 				Message: fmt.Sprintf("%s: template replaces agent and model; drop them", a.Name),
+			})
+			continue
+		}
+		if a.Command != "" && (a.Agent != "" || a.Model != "" || a.Template != "") {
+			cfg.Invalid = append(cfg.Invalid, Diagnostic{
+				Name: a.Name, Line: a.Line,
+				Message: fmt.Sprintf("%s: command runs no agent; drop agent, model and template", a.Name),
 			})
 			continue
 		}

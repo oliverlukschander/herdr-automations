@@ -185,6 +185,14 @@ automations:
     # …
 ```
 
+**Runs that close themselves.** With `close_when_no_action: true` a run is asked to
+report whether somebody needs to act: the prompt names a command to run,
+`herdr-automations report --file <path> --action yes|no --summary "…"`. A run that
+reports `no` ends its terminal and stays out of the inbox; one that reports `yes`, or
+reports nothing, stays open there with its summary. A `command:` finds the path in
+`$HERDR_AUTOMATION_REPORT`, which `report` reads when `--file` is left out. `history` and `list` show the
+verdict.
+
 A run in `worktree` mode checks out where the app's own **New worktree…** would
 (`~/.herdr/worktrees/<repo>/<branch>`), so the app nests it under the repo's space when
 one is open. Closing a run's space calls the run off, as in the TUI.
@@ -212,10 +220,12 @@ the link.
 
 Under `backend: hc`, a run needs an agent that takes its prompt as an argument and
 reports its state to herdr-core, or a finished run can't be told from a stuck one:
-`claude` and `pi` (measured), `codex` (assumed, untested). The form offers the ones
+`claude`, `grok` and `pi` (measured), `codex` (assumed, untested). The form offers the ones
 installed. Other kinds are refused when the file loads; the TUI, which reads agents'
 screens itself, runs them all. `workflow:` and `session:`
-belong to the TUI and are refused too. A daemon started by a TUI session still exits
+belong to the TUI and are refused too; `command:` runs a shell command in the run's
+terminal instead, with no agent, done on exit 0 and failed otherwise. The app closes
+its pane when it exits, so a failure shows only its exit code in the inbox. A daemon started by a TUI session still exits
 with the last one under `backend: herdr`; the login service never does.
 
 ## How a run works
@@ -247,11 +257,13 @@ automations:
     model: sonnet                 # optional → --model; kinds without the flag are caught on load
     template: reviewer            # hc only, instead of agent + model: an hc template, prompt as its task
     prompt: "…"                   # OR workflow: <name>  (delegates to hwf run)
+                                  # OR command: "…"  (hc only: a shell command, no agent; done on exit 0)
     mcp_config: ~/.config/mcp/github.json   # optional → --mcp-config
     agent_args: ["--verbose"]               # optional, verbatim agent flags
     timeout_minutes: 60           # optional bound on the run
     catch_up_minutes: 120         # how late a sleep-delayed run may still start; -1 never
     disabled: true                # optional: keep it, don't schedule it
+    close_when_no_action: true    # hc only: the run reports; one nobody needs to act on closes
 ```
 
 

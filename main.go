@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,6 +21,7 @@ import (
 	"github.com/DnzzL/herdr-automations/internal/herdr"
 	"github.com/DnzzL/herdr-automations/internal/history"
 	"github.com/DnzzL/herdr-automations/internal/pane"
+	"github.com/DnzzL/herdr-automations/internal/report"
 	"github.com/DnzzL/herdr-automations/internal/runner"
 	"github.com/DnzzL/herdr-automations/internal/schedule"
 	"github.com/DnzzL/herdr-automations/internal/service"
@@ -50,6 +52,8 @@ Usage:
   herdr-automations put [--original <name>] [--dry-run] < automation.json
                                      Write one automation (the app panel's form)
   herdr-automations rm <name>        Delete one automation
+  herdr-automations report [--file <path>] --action yes|no --summary <text>
+                                     Say whether somebody needs to act (a run with close_when_no_action)
   herdr-automations seen <run-id|--all>
                                      Mark a run, or every finished run, as opened (the app panel's inbox)
   herdr-automations cleanup          Remove run worktrees whose work already landed
@@ -117,6 +121,8 @@ func main() {
 		} else {
 			err = config.Remove(args[0])
 		}
+	case "report":
+		err = reportCmd(args)
 	case "seen":
 		if len(args) != 1 {
 			err = fmt.Errorf("usage: herdr-automations seen <run-id|--all>")
@@ -164,6 +170,9 @@ func list() error {
 		last := "never"
 		if r, _ := history.LastRun(a.Name); r != nil {
 			last = fmt.Sprintf("%s (%s)", r.Status, r.At.Format("02 Jan 15:04"))
+			if r.Action != nil {
+				last += ", action: " + yesNo(*r.Action)
+			}
 		}
 		name := a.Name
 		if a.Disabled {
@@ -171,12 +180,15 @@ func list() error {
 		}
 		// An unset model is not blank space — it is a decision left to the
 		// agent, and worth seeing next to the ones you made yourself.
-		model := a.Model
+		agent, model := a.Agent, a.Model
 		if model == "" {
 			model = "agent default"
 		}
+		if a.Command != "" {
+			agent, model = "command", "-"
+		}
 		fmt.Printf("%-24s %-16s %-9s %-8s %-13s %s\n",
-			name, a.Cron, a.Workspace, a.Agent, model, last)
+			name, a.Cron, a.Workspace, agent, model, last)
 	}
 	printDiagnostics(cfg)
 	printStoppedSessions(cfg)
@@ -379,8 +391,8 @@ func putCmd(args []string) error {
 	a := config.Automation{
 		Name: in.Name, Cron: in.Cron, Repo: in.Repo, Workspace: in.Workspace, WorkspaceID: in.WorkspaceID,
 		Agent: in.Agent, Model: in.Model, Template: in.Template, Prompt: in.Prompt, Workflow: in.Workflow,
-		MCPConfig: in.MCPConfig, AgentArgs: in.AgentArgs, TimeoutMinutes: in.TimeoutMinutes,
-		CatchUpMinutes: in.CatchUpMinutes, Disabled: in.Disabled,
+		Command: in.Command, MCPConfig: in.MCPConfig, AgentArgs: in.AgentArgs, TimeoutMinutes: in.TimeoutMinutes,
+		CatchUpMinutes: in.CatchUpMinutes, Disabled: in.Disabled, CloseWhenNoAction: in.CloseWhenNoAction,
 	}
 	return printJSON(config.Put(original, a, dryRun))
 }
@@ -442,6 +454,9 @@ func showHistory(name string) error {
 	fmt.Printf("%-20s %-24s %-9s %-7s %s\n", "AT", "AUTOMATION", "STATUS", "TRIGGER", "DETAIL")
 	for _, r := range runs {
 		detail := r.Error
+		if r.Action != nil {
+			detail = "Action: " + strings.ToUpper(yesNo(*r.Action)) + " — " + r.Summary
+		}
 		if detail == "" {
 			detail = r.WorkspaceID
 		}
@@ -497,4 +512,32 @@ func serviceCmd(args []string) error {
 		return fmt.Errorf("usage: herdr-automations service install|uninstall|status")
 	}
 	return nil
+}
+
+// reportCmd writes the report of the run it is called from. The path is in
+// the prompt and, for a command, in its environment.
+func reportCmd(args []string) error {
+	flags := flag.NewFlagSet("report", flag.ContinueOnError)
+	file := flags.String("file", os.Getenv(report.Env), "the report path the run was given")
+	action := flags.String("action", "", "yes or no: does somebody need to act")
+	summary := flags.String("summary", "", "what the run found, and what to do next if anything")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *file == "" || (*action != "yes" && *action != "no") || flags.NArg() != 0 {
+		return fmt.Errorf("usage: herdr-automations report [--file <path>] --action yes|no --summary <text>")
+	}
+	act := *action == "yes"
+	if err := report.Write(*file, report.Report{Action: &act, Summary: *summary}); err != nil {
+		return err
+	}
+	fmt.Printf("Action: %s — %s\n", strings.ToUpper(*action), *summary)
+	return nil
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
 }

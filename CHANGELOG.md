@@ -2,6 +2,30 @@
 
 What changed for someone using the plugin. Dates are release dates.
 
+## Unreleased
+
+- The login service no longer leaves every 30 seconds when the TUI plugin is
+  still installed but disabled: a disabled plugin's binary is not the
+  installed one.
+- `command:` (hc only) runs a shell command in the run's terminal, with no
+  agent: done on exit 0, failed otherwise. With `close_when_no_action` it gets
+  its report path as `$HERDR_AUTOMATION_REPORT`. The panel shows and edits
+  such entries; new ones it makes are still agents.
+- `agent: grok` runs under `backend: hc`. Measured: grok reports working
+  through its tool calls and done when it ends, so a finished run is told
+  from a stuck one.
+- `close_when_no_action: true` (hc only): each run reports whether somebody
+  needs to act, with `herdr-automations report --action yes|no --summary …`.
+  One that says no ends its terminal and stays out of the panel's inbox; one
+  that says yes, or reports nothing, stays open there. `history`, `list` and
+  their `--json` carry the verdict and summary.
+- The panel shows another machine's automations: a `machine` prop and a pill
+  per machine in its header. There it runs the CLI on that machine, types the
+  repo instead of picking it, and refreshes every 30 seconds. Its inbox shows
+  each run's verdict and summary, an overlay copy gets a `×`, and saving the
+  form no longer drops the fields it doesn't show (`close_when_no_action`,
+  `agent_args`, `catch_up_minutes`, `disabled`).
+
 ## v0.11.3 — 2026-10-30
 
 - The login service now actually follows `herdr plugin update`. An update

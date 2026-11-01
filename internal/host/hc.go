@@ -14,6 +14,7 @@ import (
 
 	"github.com/DnzzL/herdr-automations/internal/config"
 	"github.com/DnzzL/herdr-automations/internal/hc"
+	"github.com/DnzzL/herdr-automations/internal/report"
 )
 
 // hcOps is the hc host's internal seam: herdr-core, and the two git calls a
@@ -22,6 +23,8 @@ type hcOps interface {
 	Run(cwd string, labels map[string]string, argv []string) (string, error)
 	Wait(address string, timeout time.Duration) (hc.Wait, error)
 	Get(address string) (hc.Terminal, error)
+	Kill(address string) error
+	Rm(address string) error
 	// MainCheckout is the repo's main working tree, whatever checkout repo is.
 	MainCheckout(repo string) (string, error)
 	WorktreeAdd(repo, branch, path string) error
@@ -88,7 +91,7 @@ func (h *hcHost) worktree(a config.Automation) (string, error) {
 	return path, nil
 }
 
-// Do waits for the agent to finish its turn.
+// Do waits for the agent to finish its turn, or a command to exit.
 func (h *hcHost) Do(s Session, a config.Automation, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	started := time.Now()
@@ -96,7 +99,7 @@ func (h *hcHost) Do(s Session, a config.Automation, timeout time.Duration) error
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return fmt.Errorf("the agent was still working after %s", timeout)
+			return fmt.Errorf("the run was still working after %s", timeout)
 		}
 		w, err := h.ops.Wait(s.PaneID, min(h.knobs.waitSlice, remaining))
 		if err != nil {
@@ -111,7 +114,9 @@ func (h *hcHost) Do(s Session, a config.Automation, timeout time.Duration) error
 		working = working || w.Status == "working" || w.Status == "blocked"
 		switch {
 		case w.Reason == "exit":
-			return h.exitOutcome(s)
+			return h.exitOutcome(s, a)
+		case a.Command != "":
+			// A command reports no state: only its exit says it is done.
 		case w.Reason == "status" && w.Status == "error":
 			return fmt.Errorf("the agent reported an error")
 		case w.Reason == "status" && (turn > 0 || working) && (w.Status == "done" || w.Status == "idle"):
@@ -120,7 +125,7 @@ func (h *hcHost) Do(s Session, a config.Automation, timeout time.Duration) error
 		// No turn yet after this long: the agent is sitting on something only
 		// a person can answer, like Claude's trust dialog in a folder it has
 		// never seen. It reports no status there at all, not even blocked.
-		if turn == 0 && !working && time.Since(started) > h.knobs.paneReady && !h.reportsWork(s) {
+		if a.Command == "" && turn == 0 && !working && time.Since(started) > h.knobs.paneReady && !h.reportsWork(s) {
 			return fmt.Errorf("the agent never started working; open %s and look for a dialog (trust prompt?)", s.PaneID)
 		}
 		if w.Ended {
@@ -129,6 +134,15 @@ func (h *hcHost) Do(s Session, a config.Automation, timeout time.Duration) error
 			time.Sleep(h.knobs.statusPoll)
 		}
 	}
+}
+
+// Close ends the run's terminal and removes it, which takes its tab out of
+// the app. Killing one that already exited does nothing.
+func (h *hcHost) Close(s Session) error {
+	if err := h.ops.Kill(s.PaneID); err != nil {
+		return err
+	}
+	return h.ops.Rm(s.PaneID)
 }
 
 // reportsWork asks the terminal itself: a wait that only checked in may not
@@ -142,11 +156,21 @@ func (h *hcHost) reportsWork(s Session) bool {
 }
 
 // exitOutcome tells a run called off from one that crashed: closing the
-// run's space in the app kills its terminal; a crash exits on its own.
-func (h *hcHost) exitOutcome(s Session) error {
+// run's space in the app kills its terminal; a crash exits on its own. For a
+// command, exiting is finishing, and its code says how.
+func (h *hcHost) exitOutcome(s Session, a config.Automation) error {
 	t, err := h.ops.Get(s.PaneID)
 	if err != nil || t.Reason == "killed" {
 		return ErrCancelled
+	}
+	if a.Command != "" {
+		if t.ExitCode != nil && *t.ExitCode == 0 {
+			return nil
+		}
+		if t.ExitCode != nil {
+			return fmt.Errorf("the command exited with code %d", *t.ExitCode)
+		}
+		return fmt.Errorf("the command was ended by a signal")
 	}
 	if t.ExitCode != nil {
 		return fmt.Errorf("the agent exited with code %d before finishing", *t.ExitCode)
@@ -154,9 +178,17 @@ func (h *hcHost) exitOutcome(s Session) error {
 	return fmt.Errorf("the agent exited before finishing")
 }
 
-// hcArgv is what hc runs: a template and its task, or the agent with its
-// flags and the prompt as its first message.
+// hcArgv is what hc runs: a command through sh, a template and its task, or
+// the agent with its flags and the prompt as its first message. hc takes no
+// environment, so a command's report path goes in through env.
 func hcArgv(a config.Automation) ([]string, error) {
+	if a.Command != "" {
+		argv := []string{"sh", "-c", a.Command}
+		if a.ReportPath != "" {
+			argv = append([]string{"env", report.Env + "=" + a.ReportPath}, argv...)
+		}
+		return argv, nil
+	}
 	if a.Template != "" {
 		return []string{a.Template, a.Prompt}, nil
 	}

@@ -21,6 +21,7 @@ type fakeHC struct {
 	term     hc.Terminal
 	runErr   error
 	delay    time.Duration // per Wait
+	ended    []string      // kill and rm calls, in order
 }
 
 func (f *fakeHC) Run(cwd string, labels map[string]string, argv []string) (string, error) {
@@ -39,6 +40,10 @@ func (f *fakeHC) Wait(string, time.Duration) (hc.Wait, error) {
 }
 
 func (f *fakeHC) Get(string) (hc.Terminal, error) { return f.term, nil }
+
+func (f *fakeHC) Kill(a string) error { f.ended = append(f.ended, "kill "+a); return nil }
+
+func (f *fakeHC) Rm(a string) error { f.ended = append(f.ended, "rm "+a); return nil }
 
 func (f *fakeHC) MainCheckout(string) (string, error) { return "/src/myapp", nil }
 
@@ -177,6 +182,65 @@ func TestHCDo(t *testing.T) {
 			case c.want == "cancelled" && !errors.Is(err, ErrCancelled):
 				t.Fatalf("want cancelled, got %v", err)
 			case c.want != "" && c.want != "cancelled" && (err == nil || !strings.Contains(err.Error(), c.want)):
+				t.Fatalf("want %q, got %v", c.want, err)
+			}
+		})
+	}
+}
+
+// A run nobody needs goes away the way closing it in the app would: its
+// program ended first, since hc removes only a finished terminal.
+func TestHCCloseKillsThenRemovesTheTerminal(t *testing.T) {
+	f := &fakeHC{}
+	if err := newHCTest(f).Close(Session{PaneID: "t7"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(f.ended, ", "); got != "kill t7, rm t7" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// hc takes no environment, so a command's report path rides in on env.
+func TestHCProvisionRunsACommandThroughSh(t *testing.T) {
+	a := hcAutomation()
+	a.Agent, a.Model, a.Prompt, a.Command = "", "", "", "python3 export.py && echo ok"
+	f := &fakeHC{}
+	if _, err := newHCTest(f).Provision(a); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(f.argv, "|"); got != "sh|-c|python3 export.py && echo ok" {
+		t.Fatalf("argv %q", got)
+	}
+	a.ReportPath = "/state/reports/run-1.json"
+	if _, err := newHCTest(f).Provision(a); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(f.argv, "|"); got != "env|HERDR_AUTOMATION_REPORT=/state/reports/run-1.json|sh|-c|python3 export.py && echo ok" {
+		t.Fatalf("argv %q", got)
+	}
+}
+
+func TestHCDoACommand(t *testing.T) {
+	zero, three := 0, 3
+	cases := []struct {
+		name string
+		term hc.Terminal
+		want string // "" = success, else a substring
+	}{
+		{"exit 0 is done", hc.Terminal{State: "finished", Reason: "exited", ExitCode: &zero}, ""},
+		{"any other code failed", hc.Terminal{State: "finished", Reason: "exited", ExitCode: &three}, "exited with code 3"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// Running past paneReady with no status at all: an agent that never
+			// started, but a command that is simply working.
+			f := &fakeHC{term: c.term, delay: 40 * time.Millisecond, waits: []hc.Wait{
+				{Reason: "timeout"}, {Reason: "timeout"}, {Ended: true, Reason: "exit", ExitCode: c.term.ExitCode},
+			}}
+			a := hcAutomation()
+			a.Agent, a.Prompt, a.Command = "", "", "python3 export.py"
+			err := newHCTest(f).Do(Session{PaneID: "t7"}, a, time.Second)
+			if c.want == "" && err != nil || c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)) {
 				t.Fatalf("want %q, got %v", c.want, err)
 			}
 		})

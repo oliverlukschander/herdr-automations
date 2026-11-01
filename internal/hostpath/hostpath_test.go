@@ -143,7 +143,10 @@ func TestInstalledBinaryReadsThePluginRoot(t *testing.T) {
 	if got, want := installedBinary(raw), "/p/77472-0/checkout/bin/herdr-automations"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
-	for _, bad := range []string{``, `{}`, `not json`, `{"result":{"plugins":[{"plugin_id":"someone.else","plugin_root":"/x"}]}}`} {
+	for _, bad := range []string{``, `{}`, `not json`, `{"result":{"plugins":[{"plugin_id":"someone.else","plugin_root":"/x"}]}}`,
+		// Disabled in the TUI after moving to the app's service: its old
+		// checkout must not send the service away every 30 seconds.
+		`{"result":{"plugins":[{"plugin_id":"dnzzl.automations","plugin_root":"/p/old","enabled":false}]}}`} {
 		if got := installedBinary([]byte(bad)); got != "" {
 			t.Errorf("%q: got %q, want nothing", bad, got)
 		}
