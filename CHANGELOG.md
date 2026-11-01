@@ -9,6 +9,12 @@ What changed for someone using the plugin. Dates are release dates.
   One that says no ends its terminal and stays out of the panel's inbox; one
   that says yes, or reports nothing, stays open there. `history`, `list` and
   their `--json` carry the verdict and summary.
+- The panel shows another machine's automations: a `machine` prop and a pill
+  per machine in its header. There it runs the CLI on that machine, types the
+  repo instead of picking it, and refreshes every 30 seconds. Its inbox shows
+  each run's verdict and summary, an overlay copy gets a `×`, and saving the
+  form no longer drops the fields it doesn't show (`close_when_no_action`,
+  `agent_args`, `catch_up_minutes`, `disabled`).
 
 ## v0.11.3 — 2026-10-30
 
