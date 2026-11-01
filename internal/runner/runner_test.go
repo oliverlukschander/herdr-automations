@@ -421,3 +421,21 @@ func TestCloseWhenNoActionForACommand(t *testing.T) {
 		t.Fatalf("got %+v, closed %v", got, h.closed)
 	}
 }
+
+// A command that fails can still say why (an export writes where its log is),
+// and that is all there is to read once its pane has closed.
+func TestAFailedRunKeepsTheSummaryItReported(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	h := &fakeHost{do: func(_ host.Session, a config.Automation, _ time.Duration) error {
+		yes := true
+		_ = report.Write(a.ReportPath, report.Report{Action: &yes, Summary: "export failed, see run.log"})
+		return errors.New("the command exited with code 2")
+	}}
+	a := automation()
+	a.Agent, a.Prompt, a.Command, a.CloseWhenNoAction = "", "", "python3 export.py", true
+	_ = New(h).Run(a, "cron")
+	got := runs(t)[0]
+	if got.Status != history.StatusFailed || got.Error != "the command exited with code 2; export failed, see run.log" || len(h.closed) != 0 {
+		t.Fatalf("got %+v, closed %v", got, h.closed)
+	}
+}

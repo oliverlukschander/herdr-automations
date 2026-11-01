@@ -90,6 +90,11 @@ func (r *Runner) Run(a config.Automation, trigger history.Trigger) error {
 
 	timeout := time.Duration(a.TimeoutMinutes) * time.Minute
 	if err := r.host.Do(session, a, timeout); err != nil {
+		// A run that failed may still have said why, as a command does when
+		// its pane is gone with its output.
+		if rep, rerr := report.Read(a.ReportPath); rerr == nil {
+			err = fmt.Errorf("%w; %s", err, rep.Summary)
+		}
 		r.record(id, a.Name, trigger, statusFor(err), session, err.Error())
 		return err
 	}
