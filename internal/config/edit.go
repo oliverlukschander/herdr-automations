@@ -86,6 +86,25 @@ func Remove(name string) error {
 	return write(raw)
 }
 
+// Written is the entry named name as the file has it, before defaults, or nil
+// where there is none. What a put or an rm replaces, for the record of changes.
+func Written(name string) (*Automation, error) {
+	doc, err := readDoc()
+	if err != nil {
+		return nil, err
+	}
+	seq := automationsOf(doc)
+	at := entryIndex(seq, name)
+	if at < 0 {
+		return nil, nil
+	}
+	var a Automation
+	if err := seq.Content[at].Decode(&a); err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
 // SetPaused pauses or resumes one automation (its disabled flag), or every
 // automation when name is empty (the top-level paused flag).
 func SetPaused(name string, paused bool) error {

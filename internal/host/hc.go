@@ -49,7 +49,7 @@ type hcHost struct {
 // in the run's history as soon as it is running. hc takes the prompt with the
 // launch, so there is no separate submit step to keep apart.
 func (h *hcHost) Provision(a config.Automation) (Session, error) {
-	argv, err := hcArgv(a)
+	argv, err := hcArgv(a, h.home)
 	if err != nil {
 		return Session{}, err
 	}
@@ -118,7 +118,7 @@ func (h *hcHost) Do(s Session, a config.Automation, timeout time.Duration) error
 		case a.Command != "":
 			// A command reports no state: only its exit says it is done.
 		case w.Reason == "status" && w.Status == "error":
-			return fmt.Errorf("the agent reported an error")
+			return ErrStopped
 		case w.Reason == "status" && (turn > 0 || working) && (w.Status == "done" || w.Status == "idle"):
 			return nil
 		}
@@ -179,9 +179,10 @@ func (h *hcHost) exitOutcome(s Session, a config.Automation) error {
 }
 
 // hcArgv is what hc runs: a command through sh, a template and its task, or
-// the agent with its flags and the prompt as its first message. hc takes no
-// environment, so a command's report path goes in through env.
-func hcArgv(a config.Automation) ([]string, error) {
+// the agent with its flags and the prompt as its first message, Claude Code
+// as its Claude account (account.go). hc takes no environment, so a
+// command's report path goes in through env.
+func hcArgv(a config.Automation, home string) ([]string, error) {
 	if a.Command != "" {
 		argv := []string{"sh", "-c", a.Command}
 		if a.ReportPath != "" {
@@ -195,7 +196,7 @@ func hcArgv(a config.Automation) ([]string, error) {
 	if !config.KindTakesPromptArg(a.Agent) {
 		return nil, fmt.Errorf("agent %q cannot take its prompt under backend: hc yet", a.Agent)
 	}
-	argv := append([]string{a.Agent}, agentArgs(a)...)
+	argv := append(launcher(a, home), agentArgs(a)...)
 	return append(argv, a.Prompt), nil
 }
 

@@ -69,6 +69,10 @@ type Automation struct {
 	// The value is passed through untouched: model names move faster than any
 	// list we could keep here, so a typo surfaces when the agent refuses it.
 	Model string `yaml:"model,omitempty"`
+	// Account is the Claude account Claude Code runs as, an email, through
+	// kaneo-work's claude-as; empty, kaneo-work's default account where the
+	// machine has its accounts. agent: claude under backend: hc only.
+	Account string `yaml:"account,omitempty"`
 	// Prompt submitted to the agent. Mutually exclusive with Workflow.
 	Prompt string `yaml:"prompt,omitempty"`
 	// Workflow delegates execution to herdr-workflows: `hwf run <name>`.
@@ -156,6 +160,15 @@ func (a *Automation) applyDefaults() {
 	}
 }
 
+// Normalize is a as it loads: the defaults filled in and ~ written out. Two
+// entries written differently that run the same normalize the same.
+func Normalize(a Automation) Automation {
+	a.applyDefaults()
+	a.Repo = expandHome(a.Repo)
+	a.MCPConfig = expandHome(a.MCPConfig)
+	return a
+}
+
 // CatchUp is how late this automation may still start; negative means never.
 func (a Automation) CatchUp() time.Duration {
 	if a.CatchUpMinutes < 0 {
@@ -220,6 +233,23 @@ func (a *Automation) validate(backend Backend) error {
 	}
 	if a.Model != "" && !KindAcceptsModel(a.Agent) {
 		return fmt.Errorf("%s: agent %q takes no --model; put the flag it does take in agent_args", a.Name, a.Agent)
+	}
+	return a.validateAccount(backend)
+}
+
+// validateAccount checks an account the way claude-as takes it: Claude
+// Code's, under hc, an email that names no path.
+func (a *Automation) validateAccount(backend Backend) error {
+	switch {
+	case a.Account == "":
+		return nil
+	case backend != BackendHC:
+		return fmt.Errorf("%s: account requires backend: hc", a.Name)
+	case a.Template != "" || a.Command != "" || a.Agent != "claude":
+		return fmt.Errorf("%s: account is the Claude account Claude Code runs as; it needs agent: claude", a.Name)
+	case strings.HasPrefix(a.Account, ".") || strings.ContainsAny(a.Account, "/\\ \t\n") ||
+		!strings.Contains(a.Account, "@"):
+		return fmt.Errorf("%s: account %q is not an email", a.Name, a.Account)
 	}
 	return nil
 }
@@ -342,9 +372,7 @@ func parse(raw []byte) (*Config, error) {
 			})
 			continue
 		}
-		a.applyDefaults()
-		a.Repo = expandHome(a.Repo)
-		a.MCPConfig = expandHome(a.MCPConfig)
+		a = Normalize(a)
 
 		if err := a.validate(cfg.Backend); err != nil {
 			cfg.Invalid = append(cfg.Invalid, Diagnostic{

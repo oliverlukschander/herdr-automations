@@ -439,3 +439,44 @@ func TestAFailedRunKeepsTheSummaryItReported(t *testing.T) {
 		t.Fatalf("got %+v, closed %v", got, h.closed)
 	}
 }
+
+// An agent that stops, as Claude Code at a usage limit, can go on in another
+// terminal: its run keeps the report its prompt named, and Follow waits on the
+// new terminal, back in the inbox, and ends the run as Run would have.
+func TestFollowEndsAStoppedRunWhereItsAgentGoesOn(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	h := &fakeHost{do: func(host.Session, config.Automation, time.Duration) error { return host.ErrStopped }}
+	a := automation()
+	a.CloseWhenNoAction = true
+	_ = New(h).Run(a, "cron")
+	stopped := runs(t)[0]
+	if stopped.Status != history.StatusFailed || stopped.Report == "" {
+		t.Fatalf("got %+v", stopped)
+	}
+	if _, err := os.Stat(stopped.Report); err != nil {
+		t.Fatalf("the report path went with the stopped run: %v", err)
+	}
+	if err := history.MarkSeen(stopped.RunID); err != nil {
+		t.Fatal(err)
+	}
+
+	var waited string
+	h.do = func(s host.Session, a config.Automation, _ time.Duration) error {
+		waited = s.PaneID
+		yes := true
+		return report.Write(a.ReportPath, report.Report{Action: &yes, Summary: "two mails need you"})
+	}
+	if err := New(h).Follow(a, stopped, "t9"); err != nil {
+		t.Fatal(err)
+	}
+	got := runs(t)
+	if len(got) != 1 || waited != "t9" {
+		t.Fatalf("waited on %q, runs %+v", waited, got)
+	}
+	if r := got[0]; r.Status != history.StatusDone || r.Seen || r.PaneID != "t9" || r.Summary != "two mails need you" {
+		t.Fatalf("got %+v", r)
+	}
+	if _, err := os.Stat(stopped.Report); !os.IsNotExist(err) {
+		t.Fatalf("the report outlived the run: %v", err)
+	}
+}

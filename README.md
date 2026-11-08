@@ -193,6 +193,27 @@ reports nothing, stays open there with its summary. A `command:` finds the path 
 `$HERDR_AUTOMATION_REPORT`, which `report` reads when `--file` is left out. `history` and `list` show the
 verdict.
 
+**Marked read, and unread again.** Opening a run in the app marks it read
+(`herdr-automations seen <run-id>`); `herdr-automations unseen <run-id>` puts it back in
+the inbox.
+
+**What each edit did.** Every `put` and `rm` keeps the entry as it was before and as it
+became, with when, in `changes.jsonl` beside the history. `herdr-automations changes
+<name> [--json]` lists them, newest first, through renames, each with the fields that
+changed (defaults filled in, so saving an entry as written is no change); putting a
+`before` back restores that version.
+
+**A Claude account per automation.** `account: <email>` runs Claude Code as
+`claude-as <email> …`, the Work board's wrapper that keeps each Claude account's login
+apart. Without it, a Claude Code run takes the board's default account from
+`~/.config/kaneo-work/accounts.json`, and is plain `claude` where there is none.
+
+**An agent that stopped, going on elsewhere.** An agent that reports an error, as
+Claude Code at a usage limit, fails its run but keeps its terminal and the report path
+its prompt named. Started again in another terminal (the board continues it as another
+account), `herdr-automations follow <run-id> <terminal> --bg` waits on the run there:
+running again, back in the inbox, ended as any run.
+
 A run in `worktree` mode checks out where the app's own **New worktree…** would
 (`~/.herdr/worktrees/<repo>/<branch>`), so the app nests it under the repo's space when
 one is open. Closing a run's space calls the run off, as in the TUI.
@@ -255,6 +276,7 @@ automations:
     session: automations          # optional Herdr session the run happens in
     agent: claude                 # any `herdr agent start --kind`
     model: sonnet                 # optional → --model; kinds without the flag are caught on load
+    account: it@golf.at           # hc and claude only: Claude Code as this Claude account (claude-as)
     template: reviewer            # hc only, instead of agent + model: an hc template, prompt as its task
     prompt: "…"                   # OR workflow: <name>  (delegates to hwf run)
                                   # OR command: "…"  (hc only: a shell command, no agent; done on exit 0)

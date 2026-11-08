@@ -535,3 +535,34 @@ func TestCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestAccount(t *testing.T) {
+	cases := []struct {
+		backend, entry, want string
+	}{
+		{"hc", `prompt: p, account: it@golf.at`, ""},
+		{"hc", `prompt: p, agent: claude, model: opus, account: it@golf.at`, ""},
+		{"herdr", `prompt: p, account: it@golf.at`, "account requires backend: hc"},
+		{"hc", `prompt: p, agent: grok, account: it@golf.at`, "it needs agent: claude"},
+		{"hc", `prompt: p, template: reviewer, account: it@golf.at`, "it needs agent: claude"},
+		{"hc", `command: "true", account: it@golf.at`, "it needs agent: claude"},
+		{"hc", `prompt: p, account: ../it@golf.at`, "is not an email"},
+		{"hc", `prompt: p, account: oliver`, "is not an email"},
+	}
+	for _, c := range cases {
+		withConfig(t, "backend: "+c.backend+"\nautomations:\n  - {name: c, cron: \"@daily\", repo: /x, "+c.entry+"}\n")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.want == "" {
+			if len(cfg.Automations) != 1 || cfg.Automations[0].Account != "it@golf.at" {
+				t.Fatalf("%s %s: got %+v %+v", c.backend, c.entry, cfg.Automations, cfg.Invalid)
+			}
+			continue
+		}
+		if len(cfg.Invalid) != 1 || !strings.Contains(cfg.Invalid[0].Message, c.want) {
+			t.Fatalf("%s %s: want %q, got %+v", c.backend, c.entry, c.want, cfg.Invalid)
+		}
+	}
+}

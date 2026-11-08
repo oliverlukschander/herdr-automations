@@ -49,6 +49,11 @@ type Closer interface {
 // cancelled rather than failed.
 var ErrCancelled = errors.New("the run's workspace was closed")
 
+// ErrStopped means the agent reported an error and stopped, its terminal
+// still there: as Claude Code does at a usage limit. It can go on in another
+// terminal, which the runner's Follow then waits on.
+var ErrStopped = errors.New("the agent reported an error")
+
 // New returns the Host that drives the real Herdr.
 func New() Host { return &live{ops: herdrOps{}, knobs: defaultKnobs()} }
 
