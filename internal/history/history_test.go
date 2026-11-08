@@ -1,6 +1,8 @@
 package history
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -96,5 +98,37 @@ func TestMarkAllSeenEmptiesTheInbox(t *testing.T) {
 		if want := r.Status != StatusRunning; r.Seen != want {
 			t.Errorf("%s (%s): seen %v, want %v", r.RunID, r.Status, r.Seen, want)
 		}
+	}
+}
+
+// Mark unread takes an opened run back to the inbox; a run never opened is
+// left as it is, and later records keep it unopened.
+func TestMarkUnseenPutsARunBackInTheInbox(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	if err := Append(Record{RunID: "r1", Automation: "a", Status: StatusFailed, At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkUnseen("r1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkSeen("r1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkUnseen("r1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkUnseen("nope"); err == nil {
+		t.Fatal("an unknown run must say so")
+	}
+	if err := Append(Record{RunID: "r1", Automation: "a", Status: StatusRunning, At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Find("r1")
+	if err != nil || r.Seen || r.Status != StatusRunning {
+		t.Fatalf("got %+v %v", r, err)
+	}
+	raw, _ := os.ReadFile(path())
+	if n := strings.Count(string(raw), "\n"); n != 4 {
+		t.Fatalf("%d records, want 4: an unseen run marked unseen writes nothing\n%s", n, raw)
 	}
 }

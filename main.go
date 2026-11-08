@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/DnzzL/herdr-automations/internal/api"
+	"github.com/DnzzL/herdr-automations/internal/changes"
 	"github.com/DnzzL/herdr-automations/internal/cleanup"
 	"github.com/DnzzL/herdr-automations/internal/config"
 	"github.com/DnzzL/herdr-automations/internal/daemon"
@@ -49,13 +50,18 @@ Usage:
                                      Resume what pause stopped
   herdr-automations history [name] [--json]
                                      Show recent runs
+  herdr-automations follow <run-id> <terminal> [--bg]
+                                     Wait on a run again where its stopped agent goes on
   herdr-automations put [--original <name>] [--dry-run] < automation.json
                                      Write one automation (the app panel's form)
   herdr-automations rm <name>        Delete one automation
+  herdr-automations changes <name> [--json]
+                                     What each put and rm did to it, newest first
   herdr-automations report [--file <path>] --action yes|no --summary <text>
                                      Say whether somebody needs to act (a run with close_when_no_action)
   herdr-automations seen <run-id|--all>
                                      Mark a run, or every finished run, as opened (the app panel's inbox)
+  herdr-automations unseen <run-id>  Mark a run as not opened, back in the inbox
   herdr-automations cleanup          Remove run worktrees whose work already landed
   herdr-automations pane             Interactive board (used by the Herdr pane)
   herdr-automations install-cli [dir] Put this command on your PATH (default ~/.local/bin)
@@ -113,14 +119,14 @@ func main() {
 		} else {
 			err = showHistory(name)
 		}
+	case "follow":
+		err = followCmd(withoutFlag(args, "--bg"))
 	case "put":
 		err = putCmd(args)
 	case "rm":
-		if len(args) != 1 {
-			err = fmt.Errorf("usage: herdr-automations rm <name>")
-		} else {
-			err = config.Remove(args[0])
-		}
+		err = rmCmd(args)
+	case "changes":
+		err = changesCmd(args, asJSON)
 	case "report":
 		err = reportCmd(args)
 	case "seen":
@@ -130,6 +136,12 @@ func main() {
 			err = history.MarkAllSeen()
 		} else {
 			err = history.MarkSeen(args[0])
+		}
+	case "unseen":
+		if len(args) != 1 {
+			err = fmt.Errorf("usage: herdr-automations unseen <run-id>")
+		} else {
+			err = history.MarkUnseen(args[0])
 		}
 	case "pane":
 		err = pane.Run()
@@ -384,25 +396,109 @@ func putCmd(args []string) error {
 	} else if len(args) != 0 {
 		return fmt.Errorf("usage: herdr-automations put [--original <name>] [--dry-run] < automation.json")
 	}
-	var in api.Automation
+	var in api.Entry
 	if err := json.NewDecoder(os.Stdin).Decode(&in); err != nil {
 		return fmt.Errorf("read automation JSON: %w", err)
 	}
-	a := config.Automation{
-		Name: in.Name, Cron: in.Cron, Repo: in.Repo, Workspace: in.Workspace, WorkspaceID: in.WorkspaceID,
-		Agent: in.Agent, Model: in.Model, Template: in.Template, Prompt: in.Prompt, Workflow: in.Workflow,
-		Command: in.Command, MCPConfig: in.MCPConfig, AgentArgs: in.AgentArgs, TimeoutMinutes: in.TimeoutMinutes,
-		CatchUpMinutes: in.CatchUpMinutes, Disabled: in.Disabled, CloseWhenNoAction: in.CloseWhenNoAction,
+	a := in.Config()
+	before, _ := config.Written(original)
+	res, err := config.Put(original, a, dryRun)
+	if err == nil && !dryRun && res.Problem == "" {
+		keep(changes.Record("put", before, &a))
 	}
-	return printJSON(config.Put(original, a, dryRun))
+	return printJSON(res, err)
 }
 
-// runDetached starts `run <name>` in its own session and returns at once. The
-// panel cannot wait an hour on exec, and the run must outlive the app.
+// rmCmd deletes one automation, keeping what it was.
+func rmCmd(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: herdr-automations rm <name>")
+	}
+	before, _ := config.Written(args[0])
+	if err := config.Remove(args[0]); err != nil {
+		return err
+	}
+	keep(changes.Record("rm", before, nil))
+	return nil
+}
+
+// keep says where a change was not recorded; the write it records stands.
+func keep(err error) {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: the change was made but not recorded:", err)
+	}
+}
+
+// changesCmd lists what each put and rm did to one automation.
+func changesCmd(args []string, asJSON bool) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: herdr-automations changes <name> [--json]")
+	}
+	list, err := changes.Of(args[0])
+	if err != nil || asJSON {
+		return printJSON(list, err)
+	}
+	if len(list) == 0 {
+		fmt.Println("No changes recorded.")
+		return nil
+	}
+	for _, c := range list {
+		what := strings.Join(c.Fields, ", ")
+		switch {
+		case c.Before == nil:
+			what = "made"
+		case c.After == nil:
+			what = "deleted"
+		case what == "":
+			what = "saved unchanged"
+		}
+		fmt.Printf("%-20s %-4s %s\n", c.At.Format(time.DateTime), c.Op, what)
+	}
+	return nil
+}
+
+// followCmd waits on a run where its stopped agent goes on, as runner.Follow,
+// or with bg checks it can and leaves that to a process of its own.
+func followCmd(args []string, bg bool) error {
+	if len(args) != 2 {
+		return fmt.Errorf("usage: herdr-automations follow <run-id> <terminal> [--bg]")
+	}
+	run, err := history.Find(args[0])
+	if err != nil {
+		return err
+	}
+	if run.Status == history.StatusScheduled || run.Status == history.StatusRunning {
+		return fmt.Errorf("%s is still %s, and its own run waits on it", run.RunID, run.Status)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if cfg.Backend != config.BackendHC {
+		return fmt.Errorf("follow waits on herdr-core terminals; this config's backend is %s", cfg.Backend)
+	}
+	a := cfg.Find(run.Automation)
+	if a == nil {
+		return fmt.Errorf("no automation named %q", run.Automation)
+	}
+	if bg {
+		return detach(append([]string{"follow"}, args...))
+	}
+	return runner.Default().Follow(*a, run, args[1])
+}
+
+// runDetached starts `run <name>` in its own session and returns at once.
 func runDetached(args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: herdr-automations run <name> --bg")
 	}
+	return detach(append([]string{"run"}, args...))
+}
+
+// detach starts this command with args in its own session and returns at
+// once. The panel cannot wait an hour on exec, and the run must outlive the
+// app.
+func detach(args []string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -415,7 +511,7 @@ func runDetached(args []string) error {
 		return err
 	}
 	defer logf.Close()
-	cmd := exec.Command(exe, "run", args[0])
+	cmd := exec.Command(exe, args...)
 	cmd.Stdout, cmd.Stderr = logf, logf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return cmd.Start()

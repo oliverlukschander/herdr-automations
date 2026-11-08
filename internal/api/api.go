@@ -24,8 +24,9 @@ type Listing struct {
 	Invalid     []Invalid    `json:"invalid"`
 }
 
-// Automation is one entry as the form edits it, plus what the list shows.
-type Automation struct {
+// Entry is one automation as the form edits it and `put` takes it: its
+// definition, nothing the list adds.
+type Entry struct {
 	Name           string           `json:"name"`
 	Cron           string           `json:"cron"`
 	Repo           string           `json:"repo"`
@@ -33,6 +34,7 @@ type Automation struct {
 	WorkspaceID    string           `json:"workspace_id,omitempty"`
 	Agent          string           `json:"agent,omitempty"`
 	Model          string           `json:"model,omitempty"`
+	Account        string           `json:"account,omitempty"`
 	Template       string           `json:"template,omitempty"`
 	Prompt         string           `json:"prompt,omitempty"`
 	Workflow       string           `json:"workflow,omitempty"`
@@ -43,10 +45,37 @@ type Automation struct {
 	CatchUpMinutes int              `json:"catch_up_minutes"`
 	Disabled       bool             `json:"disabled"`
 	// Here so that saving the form keeps it.
-	CloseWhenNoAction bool      `json:"close_when_no_action,omitempty"`
-	Line              int       `json:"line"`
-	Next              time.Time `json:"next"`
-	Last              *Run      `json:"last"`
+	CloseWhenNoAction bool `json:"close_when_no_action,omitempty"`
+}
+
+// EntryOf is the entry of a.
+func EntryOf(a config.Automation) Entry {
+	return Entry{
+		Name: a.Name, Cron: a.Cron, Repo: a.Repo, Workspace: a.Workspace, WorkspaceID: a.WorkspaceID,
+		Agent: a.Agent, Model: a.Model, Account: a.Account, Template: a.Template, Prompt: a.Prompt,
+		Workflow: a.Workflow, Command: a.Command, MCPConfig: a.MCPConfig, AgentArgs: a.AgentArgs,
+		TimeoutMinutes: a.TimeoutMinutes, CatchUpMinutes: a.CatchUpMinutes, Disabled: a.Disabled,
+		CloseWhenNoAction: a.CloseWhenNoAction,
+	}
+}
+
+// Config is the automation e describes, as automations.yaml holds it.
+func (e Entry) Config() config.Automation {
+	return config.Automation{
+		Name: e.Name, Cron: e.Cron, Repo: e.Repo, Workspace: e.Workspace, WorkspaceID: e.WorkspaceID,
+		Agent: e.Agent, Model: e.Model, Account: e.Account, Template: e.Template, Prompt: e.Prompt,
+		Workflow: e.Workflow, Command: e.Command, MCPConfig: e.MCPConfig, AgentArgs: e.AgentArgs,
+		TimeoutMinutes: e.TimeoutMinutes, CatchUpMinutes: e.CatchUpMinutes, Disabled: e.Disabled,
+		CloseWhenNoAction: e.CloseWhenNoAction,
+	}
+}
+
+// Automation is one entry as the list shows it.
+type Automation struct {
+	Entry
+	Line int       `json:"line"`
+	Next time.Time `json:"next"`
+	Last *Run      `json:"last"`
 }
 
 // Invalid is an entry that did not load, and where to fix it.
@@ -87,12 +116,7 @@ func List() (Listing, error) {
 	}
 	now := time.Now()
 	for _, a := range cfg.Automations {
-		entry := Automation{
-			Name: a.Name, Cron: a.Cron, Repo: a.Repo, Workspace: a.Workspace, WorkspaceID: a.WorkspaceID,
-			Agent: a.Agent, Model: a.Model, Template: a.Template, Prompt: a.Prompt, Workflow: a.Workflow,
-			Command: a.Command, MCPConfig: a.MCPConfig, AgentArgs: a.AgentArgs, TimeoutMinutes: a.TimeoutMinutes,
-			CatchUpMinutes: a.CatchUpMinutes, Disabled: a.Disabled, CloseWhenNoAction: a.CloseWhenNoAction, Line: a.Line,
-		}
+		entry := Automation{Entry: EntryOf(a), Line: a.Line}
 		if a.Template != "" {
 			entry.Agent = "" // the default filled in at load; a template brings its own
 		}

@@ -79,6 +79,12 @@ type Record struct {
 	// is a copy of the run's latest record with the flag set; Runs folds it
 	// into the run rather than letting it stand in for the status.
 	Seen bool `json:"seen,omitempty"`
+	// Unseen takes Seen back: the run is unopened again. Written and folded
+	// the same way.
+	Unseen bool `json:"unseen,omitempty"`
+	// Report is the path the run reports to (close_when_no_action), kept so
+	// a run whose agent stopped can be followed where it goes on.
+	Report string `json:"report,omitempty"`
 	// Started is when the run's first record was written. Filled in by Runs,
 	// never stored: the first record already says it.
 	Started time.Time `json:"-"`
@@ -130,9 +136,9 @@ func Runs(automation string, limit int) ([]Record, error) {
 			continue
 		}
 		prev, ok := latest[r.RunID]
-		if r.Seen {
+		if r.Seen || r.Unseen {
 			if ok {
-				prev.Seen = true
+				prev.Seen = r.Seen
 				latest[r.RunID] = prev
 			}
 			continue
@@ -168,22 +174,42 @@ func LastRun(automation string) (*Record, error) {
 	return &runs[0], nil
 }
 
-// MarkSeen records that a run was opened.
-func MarkSeen(runID string) error {
+// Find returns the run's latest record.
+func Find(runID string) (Record, error) {
 	runs, err := Runs("", 0)
 	if err != nil {
-		return err
+		return Record{}, err
 	}
 	for _, r := range runs {
 		if r.RunID == runID {
-			// A full copy, not just the flag: a reader that predates Seen
-			// takes the last record per run as its state, and must still
-			// find the run's status there.
-			r.Seen = true
-			return Append(r)
+			return r, nil
 		}
 	}
-	return fmt.Errorf("no run %q", runID)
+	return Record{}, fmt.Errorf("no run %q", runID)
+}
+
+// MarkSeen records that a run was opened.
+func MarkSeen(runID string) error {
+	r, err := Find(runID)
+	if err != nil {
+		return err
+	}
+	// A full copy, not just the flag: a reader that predates Seen takes the
+	// last record per run as its state, and must still find the run's status
+	// there.
+	r.Seen = true
+	return Append(r)
+}
+
+// MarkUnseen puts an opened run back in the inbox, as if nobody had opened it.
+// One that is unopened already is left as it is.
+func MarkUnseen(runID string) error {
+	r, err := Find(runID)
+	if err != nil || !r.Seen {
+		return err
+	}
+	r.Seen, r.Unseen = false, true
+	return Append(r)
 }
 
 // MarkAllSeen marks every finished run as opened. A run still going is left

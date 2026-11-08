@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/DnzzL/herdr-automations/internal/config"
 )
@@ -31,11 +32,22 @@ func (r Report) validate() error {
 	return nil
 }
 
-// NewPath reserves a fresh report path for one run.
+// Kept is how long a report outlives its run at most: one whose agent stopped
+// stays until then, in case it is continued and followed.
+const Kept = 7 * 24 * time.Hour
+
+// NewPath reserves a fresh report path for one run, and lets go of those
+// older than Kept.
 func NewPath() (string, error) {
 	dir := filepath.Join(config.StateDir(), "reports")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
+	}
+	old, _ := filepath.Glob(filepath.Join(dir, "run-*"))
+	for _, path := range old {
+		if info, err := os.Stat(path); err == nil && time.Since(info.ModTime()) > Kept {
+			_ = os.Remove(path)
+		}
 	}
 	f, err := os.CreateTemp(dir, "run-*.json")
 	if err != nil {

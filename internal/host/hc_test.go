@@ -2,6 +2,7 @@ package host
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -131,7 +132,7 @@ func TestHCDo(t *testing.T) {
 		name    string
 		waits   []hc.Wait
 		term    hc.Terminal
-		want    string // "" = success, "cancelled" = ErrCancelled, else a substring
+		want    string // "" = success, "cancelled" = ErrCancelled, "stopped" = ErrStopped, else a substring
 		timeout time.Duration
 		slow    bool // each wait takes longer than paneReady
 	}{
@@ -149,7 +150,7 @@ func TestHCDo(t *testing.T) {
 			term: hc.Terminal{State: "finished", Reason: "killed"}, want: "cancelled"},
 		{name: "agent exited", waits: []hc.Wait{{Ended: true, Reason: "exit", ExitCode: &code}},
 			term: hc.Terminal{State: "finished", Reason: "exited", ExitCode: &code}, want: "exited with code 2"},
-		{name: "agent error", waits: []hc.Wait{{Ended: true, Reason: "status", Status: "error", Turn: 1}}, want: "error"},
+		{name: "agent error", waits: []hc.Wait{{Ended: true, Reason: "status", Status: "error", Turn: 1}}, want: "stopped"},
 		// pi counts its turn when the turn ends, Claude when it starts: working
 		// at turn 0 for longer than paneReady is pi on a long task, not a dialog.
 		{name: "pi working at turn 0, then done", waits: []hc.Wait{
@@ -181,7 +182,10 @@ func TestHCDo(t *testing.T) {
 				t.Fatalf("want success, got %v", err)
 			case c.want == "cancelled" && !errors.Is(err, ErrCancelled):
 				t.Fatalf("want cancelled, got %v", err)
-			case c.want != "" && c.want != "cancelled" && (err == nil || !strings.Contains(err.Error(), c.want)):
+			case c.want == "stopped" && !errors.Is(err, ErrStopped):
+				t.Fatalf("want stopped, got %v", err)
+			case c.want != "" && c.want != "cancelled" && c.want != "stopped" &&
+				(err == nil || !strings.Contains(err.Error(), c.want)):
 				t.Fatalf("want %q, got %v", c.want, err)
 			}
 		})
@@ -244,5 +248,43 @@ func TestHCDoACommand(t *testing.T) {
 				t.Fatalf("want %q, got %v", c.want, err)
 			}
 		})
+	}
+}
+
+// Claude Code runs as its Claude account through claude-as: the automation's,
+// else kaneo-work's default on the machine, else plain claude.
+func TestHCStartsClaudeCodeAsItsAccount(t *testing.T) {
+	home := t.TempDir()
+	cases := []struct {
+		agent, account, accounts, want string
+	}{
+		{"claude", "it@golf.at", "", "claude-as|it@golf.at|--model|sonnet|Triage the issues"},
+		{"claude", "", `{"list":["a@x.at"],"default":"a@x.at"}`, "claude-as|a@x.at|--model|sonnet|Triage the issues"},
+		{"claude", "it@golf.at", `{"default":"a@x.at"}`, "claude-as|it@golf.at|--model|sonnet|Triage the issues"},
+		{"claude", "", "", "claude|--model|sonnet|Triage the issues"},
+		{"grok", "", `{"default":"a@x.at"}`, "grok|--model|sonnet|Triage the issues"},
+	}
+	for _, c := range cases {
+		file := filepath.Join(home, ".config", "kaneo-work", "accounts.json")
+		_ = os.Remove(file)
+		if c.accounts != "" {
+			if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(file, []byte(c.accounts), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		f := &fakeHC{}
+		h := newHCTest(f)
+		h.home = home
+		a := hcAutomation()
+		a.Workspace, a.Agent, a.Account = config.WorkspaceRoot, c.agent, c.account
+		if _, err := h.Provision(a); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(f.argv, "|"); got != c.want {
+			t.Errorf("%+v: argv %q, want %q", c, got, c.want)
+		}
 	}
 }

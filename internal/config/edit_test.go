@@ -142,3 +142,18 @@ func TestEditsKeepTheFilesIndentation(t *testing.T) {
 		}
 	}
 }
+
+// What a put or an rm replaces is kept as the file has it, before defaults.
+func TestWrittenIsTheEntryAsTheFileHasIt(t *testing.T) {
+	withConfig(t, commented)
+	a, err := Written("triage")
+	if err != nil || a == nil {
+		t.Fatalf("written: %v %v", a, err)
+	}
+	if a.Cron != "0 9 * * 1-5" || a.Agent != "" || a.Workspace != "" || a.TimeoutMinutes != 0 {
+		t.Fatalf("got %+v", a)
+	}
+	if a, err := Written("nope"); a != nil || err != nil {
+		t.Fatalf("an unknown name: %v %v", a, err)
+	}
+}

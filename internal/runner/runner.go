@@ -60,49 +60,79 @@ func (r *Runner) Busy() bool {
 // recorded as such.
 func (r *Runner) Run(a config.Automation, trigger history.Trigger) error {
 	if _, busy := r.inFlight.LoadOrStore(a.Name, true); busy {
-		r.record(history.NewID(a.Name, ""), a.Name, trigger, history.StatusSkipped, host.Session{},
+		r.record(history.NewID(a.Name, ""), a, trigger, history.StatusSkipped, host.Session{},
 			"previous run still in flight")
 		return fmt.Errorf("%s: previous run still in flight, skipped", a.Name)
 	}
 	defer r.inFlight.Delete(a.Name)
 
 	id := history.NewID(a.Name, "")
-	r.record(id, a.Name, trigger, history.StatusScheduled, host.Session{}, "")
+	r.record(id, a, trigger, history.StatusScheduled, host.Session{}, "")
 
 	if a.CloseWhenNoAction {
 		var err error
 		if a.ReportPath, err = report.NewPath(); err != nil {
-			r.record(id, a.Name, trigger, history.StatusFailed, host.Session{}, err.Error())
+			r.record(id, a, trigger, history.StatusFailed, host.Session{}, err.Error())
 			return err
 		}
-		defer os.Remove(a.ReportPath)
 		if a.Prompt != "" {
 			a.Prompt += report.Ask(a.ReportPath)
 		}
 	}
 	session, err := r.host.Provision(a)
 	if err != nil {
-		r.record(id, a.Name, trigger, history.StatusFailed,
+		removeReport(a)
+		r.record(id, a, trigger, history.StatusFailed,
 			host.Session{WorkspaceID: session.WorkspaceID, HerdrSession: session.HerdrSession}, err.Error())
 		return err
 	}
-	r.record(id, a.Name, trigger, history.StatusRunning, session, "")
+	r.record(id, a, trigger, history.StatusRunning, session, "")
+	return r.finish(id, a, trigger, session)
+}
 
+// Follow waits on the run again in the terminal it goes on in: its agent
+// stopped (host.ErrStopped) and was started again there, as Claude Code is
+// as another Claude account after a usage limit. The run is running again,
+// back in the inbox, and ends as Run ends one, reading the report its prompt
+// named. run is over: one still running has its own waiter.
+func (r *Runner) Follow(a config.Automation, run history.Record, terminal string) error {
+	if err := history.MarkUnseen(run.RunID); err != nil {
+		return err
+	}
+	a.ReportPath = run.Report
+	s := host.Session{HerdrSession: run.Session, WorkspaceID: run.WorkspaceID, PaneID: terminal}
+	r.record(run.RunID, a, run.Trigger, history.StatusRunning, s, "")
+	return r.finish(run.RunID, a, run.Trigger, s)
+}
+
+// finish waits for the work in s and records how it ended. The report goes
+// with the run, unless its agent only stopped: then Follow may read it yet.
+func (r *Runner) finish(id string, a config.Automation, trigger history.Trigger, s host.Session) error {
 	timeout := time.Duration(a.TimeoutMinutes) * time.Minute
-	if err := r.host.Do(session, a, timeout); err != nil {
+	if err := r.host.Do(s, a, timeout); err != nil {
 		// A run that failed may still have said why, as a command does when
 		// its pane is gone with its output.
 		if rep, rerr := report.Read(a.ReportPath); rerr == nil {
 			err = fmt.Errorf("%w; %s", err, rep.Summary)
 		}
-		r.record(id, a.Name, trigger, statusFor(err), session, err.Error())
+		if !errors.Is(err, host.ErrStopped) {
+			removeReport(a)
+		}
+		r.record(id, a, trigger, statusFor(err), s, err.Error())
 		return err
 	}
+	defer removeReport(a)
 	if a.CloseWhenNoAction {
-		return r.complete(id, a, trigger, session)
+		return r.complete(id, a, trigger, s)
 	}
-	r.record(id, a.Name, trigger, history.StatusDone, session, "")
+	r.record(id, a, trigger, history.StatusDone, s, "")
 	return nil
+}
+
+func removeReport(a config.Automation) {
+	if a.ReportPath != "" {
+		_ = os.Remove(a.ReportPath)
+	}
 }
 
 // complete records a finished run's report and, when it says nobody needs to
@@ -113,7 +143,7 @@ func (r *Runner) complete(id string, a config.Automation, trigger history.Trigge
 	rep, err := report.Read(a.ReportPath)
 	if err != nil {
 		err = fmt.Errorf("the run wrote no report (%v); look at its terminal", err)
-		r.record(id, a.Name, trigger, history.StatusFailed, s, err.Error())
+		r.record(id, a, trigger, history.StatusFailed, s, err.Error())
 		return err
 	}
 	rec := history.Record{
@@ -149,11 +179,12 @@ func statusFor(err error) history.Status {
 	return history.StatusFailed
 }
 
-// record writes one state of a run.
-func (r *Runner) record(id, name string, trigger history.Trigger, st history.Status, s host.Session, errMsg string) {
+// record writes one state of a run of a.
+func (r *Runner) record(id string, a config.Automation, trigger history.Trigger, st history.Status, s host.Session,
+	errMsg string) {
 	_ = r.write(history.Record{
-		RunID: id, Automation: name, Trigger: trigger, Status: st, At: time.Now(),
-		Session: s.HerdrSession, WorkspaceID: s.WorkspaceID, PaneID: s.PaneID, Error: errMsg,
+		RunID: id, Automation: a.Name, Trigger: trigger, Status: st, At: time.Now(),
+		Session: s.HerdrSession, WorkspaceID: s.WorkspaceID, PaneID: s.PaneID, Error: errMsg, Report: a.ReportPath,
 	})
 }
 
